@@ -1,4 +1,11 @@
 node_modules/
 dist/
+.next/
+.next-build/
 .env
+.env.local
+.env.production
 *.log
+*.bak
+*.tsbuildinfo
+.DS_Store

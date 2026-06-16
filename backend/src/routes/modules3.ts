@@ -3,6 +3,8 @@ import { withScope } from '../core/db.js';
 import { authenticate, requireRole, userToScope } from '../core/auth.js';
 import { appendLedger } from '../core/audit.js';
 import { sha256 } from '../core/crypto.js';
+import { getDecrypted } from '../core/storage.js';
+import { signatureCreate } from '../connectors/signature.js';
 import { mask } from '../core/util.js';
 
 // LGPD (22), suporte seguro (23), incidente (25), auditoria externa (28).
@@ -132,4 +134,56 @@ export async function modules3(app: FastifyInstance): Promise<void> {
     return withScope(userToScope(req.user), async (c) =>
       (await c.query('SELECT manifest_json, manifest_hash FROM external_audit_package WHERE id=$1', [id])).rows[0] ?? { erro: 'não encontrado' });
   });
+
+  // ================= Assinatura externa ICP-Brasil (ClickSign/D4Sign) =================
+  // Promove a assinatura interna (eletrônica evidenciada) para AVANCADA via provedor externo.
+  // O fluxo interno permanece válido como base de evidências (Lei 14.063/2020 art. 4).
+  app.post('/api/assinatura/eletronica/enviar', async (req, reply) => {
+    if (!requireRole(req, reply, ['COORDENADOR_LOCAL', 'COORDENADOR_GERAL', 'ADMINISTRADOR_CAMPANHA', 'JURIDICO'])) return;
+    const b = (req.body as any) ?? {};
+    if (!b.documentId || !b.signerEmail || !b.signerName) {
+      return reply.code(400).send({ erro: 'documentId, signerName e signerEmail obrigatórios' });
+    }
+    const user = req.user;
+    return withScope(userToScope(user), async (c) => {
+      const doc = (await c.query(
+        `SELECT d.id, d.candidate_id, d.accounting_office_id, f.storage_key, f.encrypted_data_key, f.sha256_hash
+           FROM document_instance d JOIN document_file f ON f.id = d.current_file_id
+          WHERE d.id = $1`, [b.documentId])).rows[0];
+      if (!doc) return reply.code(404).send({ erro: 'documento fora do escopo' });
+
+      const pdfBuf = await getDecrypted(doc.storage_key, doc.encrypted_data_key);
+      const result = await signatureCreate({
+        documentName: `contrato-${doc.id}`,
+        pdfBase64: pdfBuf.toString('base64'),
+        signer: {
+          name: String(b.signerName),
+          email: String(b.signerEmail),
+          phone: b.signerPhone,
+          cpf: b.signerCpf,
+          birthdate: b.signerBirthdate,
+        },
+        authentication: (b.autenticacao ?? 'email'),
+      });
+
+      await c.query(
+        `INSERT INTO signature_request (accounting_office_id, candidate_id, document_id, worker_id, request_type, delivery_channel, destination_masked, token_hash, expires_at, status)
+         VALUES ($1,$2,$3,$4,'EXTERNA',$5,$6,$7, now() + interval '15 days', $8)`,
+        [doc.accounting_office_id, doc.candidate_id, doc.id, b.workerId ?? null,
+         (b.autenticacao ?? 'email').toUpperCase(),
+         mask(String(b.signerEmail)),
+         sha256(result.envelopeId ?? `mock-${Date.now()}`),
+         result.status === 'enviado' ? 'PENDENTE' : 'FALHA']);
+
+      await appendLedger(c, {
+        candidateId: doc.candidate_id, officeId: doc.accounting_office_id,
+        resourceType: 'signature_external', resourceId: result.envelopeId ?? '',
+        eventType: 'EXT_SIGN_ENVIADO', actorUserId: user.sub, actorRole: user.role,
+        payload: { provider: result.provider, modo: result.modo, status: result.status }
+      });
+
+      return result;
+    });
+  });
+
 }

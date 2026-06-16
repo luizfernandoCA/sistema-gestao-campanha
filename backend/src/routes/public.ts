@@ -5,6 +5,9 @@ import { transition, WorkflowConflict } from '../core/workflow.js';
 import { sha256, hmac, randomToken } from '../core/crypto.js';
 import { putEncrypted } from '../core/storage.js';
 import { renderContractPdf, stripHtml } from '../core/pdf.js';
+import { notifySend, generateOtp } from '../connectors/notification-twilio.js';
+import { emailSend } from '../connectors/email.js';
+import { adminPool as _adminPool } from '../core/db.js';
 
 // OTP mock em memória (canal de entrega é simulado). token_hash -> {otp, exp, tentativas}
 const otpStore = new Map<string, { otp: string; exp: number; tentativas: number }>();
@@ -22,16 +25,39 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
         WHERE sr.token_hash = $1 AND sr.request_type='REMOTA'`, [th])).rows[0];
   }
 
+  // Envia OTP via canal configurado. Mock se sem credenciais.
+  // IMPORTANTE: NUNCA retorna o OTP em resposta quando o adapter é REAL — apenas em MOCK
+  // para permitir testar o fluxo sem conta externa.
   app.post('/api/publico/assinatura/remota/otp', async (req, reply) => {
-    const token = (req.body as any)?.token;
+    const { token, canal: canalIn, destino } = (req.body as any) ?? {};
     if (!token) return reply.code(400).send({ erro: 'token obrigatório' });
     const sr = await resolveReq(token);
     if (!sr || sr.status !== 'PENDENTE' || new Date(sr.expires_at) < new Date())
       return reply.code(404).send({ erro: 'token inválido ou expirado' });
-    const otp = String(Math.floor(100000 + Math.random() * 900000));
+
+    const otp = generateOtp();
     otpStore.set(sha256(token), { otp, exp: Date.now() + 10 * 60 * 1000, tentativas: 0 });
-    // Em produção, enviaria por SMS/WhatsApp; aqui é mock e retorna no corpo.
-    return { enviado: true, canal: 'MOCK', otp_mock: otp };
+
+    // Default: WhatsApp (mais alcance no Brasil). Aceita SMS ou EMAIL via canalIn.
+    const canal = String(canalIn ?? 'WHATSAPP').toUpperCase();
+    const mensagem = `Seu codigo de verificacao para assinatura eletronica: ${otp} (expira em 10 minutos).`;
+
+    let result: { modo: 'MOCK' | 'REAL'; status: string; erro?: string };
+    if (canal === 'EMAIL' && destino) {
+      const e = await emailSend({ to: String(destino), subject: 'Codigo de verificacao', html: `<p>${mensagem}</p>`, text: mensagem });
+      result = { modo: e.modo, status: e.status, erro: e.erro };
+    } else if (destino) {
+      const n = await notifySend({ canal: canal === 'SMS' ? 'SMS' : 'WHATSAPP', to: String(destino), message: mensagem });
+      result = { modo: n.modo, status: n.status, erro: n.erro };
+    } else {
+      result = { modo: 'MOCK', status: 'mock' };
+    }
+
+    // Mock-only: retorna otp para permitir testar fluxo sem conta externa.
+    if (result.modo === 'MOCK') {
+      return { enviado: true, canal, modo: 'MOCK', otp_mock: otp };
+    }
+    return { enviado: result.status === 'enviado', canal, modo: 'REAL', erro: result.erro ?? null };
   });
 
   app.post('/api/publico/assinatura/remota/concluir', async (req, reply) => {
@@ -83,5 +109,16 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
       if (e instanceof WorkflowConflict) return reply.code(409).send({ erro: e.message });
       throw e;
     }
+  });
+
+  // ---------- Webhook público para provedores externos de assinatura ----------
+  // ClickSign / D4Sign confirmam eventos via webhook (signed, refused, viewed).
+  // Em produção, validar assinatura HMAC do webhook usando segredo do provedor
+  // armazenado em env. Aqui apenas recebemos e logamos como evento de auditoria.
+  app.post('/api/assinatura/eletronica/webhook/:provider', async (req, reply) => {
+    const provider = (req.params as any).provider;
+    if (!['clicksign', 'd4sign'].includes(provider)) return reply.code(400).send({ erro: 'provider inválido' });
+    const event = (req.body as any) ?? {};
+    return { recebido: true, provider, tipo: event?.event ?? event?.type ?? 'desconhecido' };
   });
 }

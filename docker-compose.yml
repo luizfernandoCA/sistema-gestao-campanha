@@ -47,16 +47,45 @@ services:
       MASTER_KEY_B64: ${MASTER_KEY_B64}
       HMAC_KEY: ${HMAC_KEY}
       DEMO_PASSWORD: ${DEMO_PASSWORD}
+      PUBLIC_BASE_URL: https://${DOMAIN}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY}
       S3_BUCKET: documentos
-      PUBLIC_BASE_URL: https://${DOMAIN}
+      # ---------- Integrações opcionais (MOCK se vazio) ----------
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_SMS_FROM: ${TWILIO_SMS_FROM:-}
+      TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM:-}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-resend}
+      EMAIL_FROM: ${EMAIL_FROM:-sistema@e-negociosinteligentes.com.br}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      SIGNATURE_PROVIDER: ${SIGNATURE_PROVIDER:-clicksign}
+      CLICKSIGN_API_TOKEN: ${CLICKSIGN_API_TOKEN:-}
+      CLICKSIGN_API_BASE: ${CLICKSIGN_API_BASE:-https://app.clicksign.com}
+      D4SIGN_API_TOKEN: ${D4SIGN_API_TOKEN:-}
+      D4SIGN_CRYPT_KEY: ${D4SIGN_CRYPT_KEY:-}
+      D4SIGN_SAFE_UUID: ${D4SIGN_SAFE_UUID:-}
+      D4SIGN_API_BASE: ${D4SIGN_API_BASE:-https://secure.d4sign.com.br/api/v1}
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      NEXT_PUBLIC_API_URL: http://api:8080
+      NODE_ENV: production
 
   caddy:
     image: caddy:2
     restart: unless-stopped
-    depends_on: [api]
+    depends_on: [api, web]
     ports:
       - "80:80"
       - "443:443"
@@ -64,7 +93,6 @@ services:
       DOMAIN: ${DOMAIN}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./frontend:/srv:ro
       - caddydata:/data
       - caddyconfig:/config
 
