@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: campanha
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 3s --health-retries 20
+    env:
+      ADMIN_DATABASE_URL: postgres://postgres:ci@localhost:5432/campanha
+      DATABASE_URL: postgres://app_rw:apppw@localhost:5432/campanha
+      APP_DB_PASSWORD: apppw
+      JWT_SECRET: ci-secret
+      HMAC_KEY: ci-hmac
+      MASTER_KEY_B64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      S3_ENDPOINT: http://localhost:9000
+      S3_ACCESS_KEY: ci
+      S3_SECRET_KEY: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Instalar dependências
+        working-directory: backend
+        run: npm ci || npm install
+      - name: Typecheck
+        working-directory: backend
+        run: npm run typecheck
+      - name: Migrar + seed
+        working-directory: backend
+        run: npm run migrate && npm run seed
+      - name: Teste de isolamento (RLS)
+        working-directory: backend
+        run: npm run test:isolation
+      - name: Auditoria de dependências (segurança)
+        working-directory: backend
+        run: npm audit --audit-level=high || true

@@ -1,0 +1,11 @@
+# ONDA_WORKLOG.md
+- 2026-06-15: Início. Lido todo o pacote de arquitetura. Definido escopo (fundação deployável), hostname, CX32, modo autônomo.
+- 2026-06-15: Ambiente checado (Node22, sem Docker, SSH out aberto). Estratégia de deploy: API Hetzner + rsync/ssh + Caddy HTTPS.
+- 2026-06-15: Build completo (backend+frontend+infra). Typecheck + teste de criptografia OK no sandbox.
+- 2026-06-15: Hetzner: projeto "campanha-documental" (id 14986977); servidor cx33 (=CX32, 4vCPU/8GB) em nbg1; IP 46.224.193.105.
+- 2026-06-15: Hostinger: registro A "escritorio" -> 46.224.193.105 (NS dns-parking = Hostinger).
+- 2026-06-15: Deploy docker compose + Caddy; HTTPS emitido; smoke E2E OK; isolamento RLS verde no banco real.
+- 2026-06-15: onda-verifier REPROVOU (3 bloqueantes). Corrigidos via 002_hardening.sql (RLS WITH CHECK + trigger imutabilidade) + requireRole na exportação/contestação + CORS allowlist. Revalidados AO VIVO: isolamento verde, download export=403, criação cross-candidato bloqueada, doc FINALIZADO rejeita novo arquivo.
+- ENTREGUE: https://escritorio.e-negociosinteligentes.com.br
+- 2026-06-15 (fase 2): Ampliado para as 35 microarquiteturas. 003_modules.sql (+30 tabelas, RLS USING+WITH CHECK). Novos módulos: importação em massa, reemissão, assinatura remota pública (OTP), notificações idempotentes, exceção em papel (QR/OCR mock), offline, antifraude, IA/OCR, LGPD (legal-hold bloqueia descarte), suporte seguro (gate de aprovação), incidente, auditoria externa, observabilidade, backup/DR (deploy/backup.sh com restore test), OpenAPI, rate limit, idempotência, CI (.github/workflows).
+- Smoke ao vivo de TODOS os módulos OK. onda-verifier reauditou: APROVADA COM RESSALVAS. Corrigidos: idempotência escopada por usuário, requireRole nas rotas que faltavam, UNIQUE no token de assinatura, limite de tentativas de OTP. Revalidado: role 403, OTP 401/429, remota ponta a ponta, isolamento verde.

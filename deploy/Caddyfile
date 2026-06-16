@@ -1,0 +1,15 @@
+{$DOMAIN} {
+	encode gzip
+
+	# API → backend Fastify
+	handle /api/* {
+		reverse_proxy api:8080
+	}
+
+	# Frontend estático (SPA)
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
