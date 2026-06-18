@@ -6,7 +6,7 @@ const P = (summary: string, tag: string, auth = true) => ({
 
 export const openapiDoc = {
   openapi: '3.0.3',
-  info: { title: 'Sistema de Gestão Documental de Campanha', version: '1.0.0', description: 'API da fundação cobrindo as 35 microarquiteturas (ambiente de demonstração).' },
+  info: { title: 'Sistema de Gestão Documental de Campanha', version: '1.0.0', description: 'API v2 — 35 microarquiteturas com adapters de produção (Anthropic, Twilio, Resend, ClickSign).' },
   servers: [{ url: '/' }],
   components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } } },
   paths: {
@@ -51,5 +51,8 @@ export const openapiDoc = {
     '/api/exportacao/{id}/download': { get: P('Baixa dossiê (ZIP)', 'exportacao') },
     '/api/observabilidade/metricas': { get: P('Métricas', 'observabilidade') },
     '/api/backup/executar': { post: P('Registra backup + restore test', 'backup') },
+    '/api/connectors/status': { get: P('Status das integrações (Anthropic/Twilio/Resend/ClickSign)', 'plataforma') },
+    '/api/assinatura/eletronica/enviar': { post: P('Cria envelope de assinatura externa (ClickSign/D4Sign)', 'assinatura-externa') },
+    '/api/assinatura/eletronica/webhook/{provider}': { post: P('Webhook do provedor de assinatura externa', 'assinatura-externa', false) },
   },
 };

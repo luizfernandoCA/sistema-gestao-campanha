@@ -1,15 +1,21 @@
 {$DOMAIN} {
-	encode gzip
+	encode gzip zstd
+
+	# Security headers (defesa em profundidade)
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "interest-cohort=()"
+	}
 
 	# API → backend Fastify
 	handle /api/* {
 		reverse_proxy api:8080
 	}
 
-	# Frontend estático (SPA)
+	# Frontend Next.js (server-rendered + standalone)
 	handle {
-		root * /srv
-		try_files {path} /index.html
-		file_server
+		reverse_proxy web:3000
 	}
 }

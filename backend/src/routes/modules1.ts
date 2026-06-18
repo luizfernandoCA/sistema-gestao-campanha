@@ -7,6 +7,8 @@ import { sha256, hmac, encField } from '../core/crypto.js';
 import { withIdempotency, mask } from '../core/util.js';
 import { renderContractPdf, stripHtml } from '../core/pdf.js';
 import { putEncrypted } from '../core/storage.js';
+import { notifySend } from '../connectors/notification-twilio.js';
+import { emailSend } from '../connectors/email.js';
 
 // Importação em massa (35), reemissão (34) e notificações (18).
 export async function modules1(app: FastifyInstance): Promise<void> {
@@ -113,20 +115,68 @@ export async function modules1(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // ---------- Notificações (idempotentes) ----------
+  // ---------- Notificações (idempotentes, via adapter real ou mock) ----------
+  // Canais suportados: SMS, WHATSAPP (Twilio), EMAIL (Resend/SendGrid).
+  // Regra técnica 18: mensagem NUNCA contém dado sensível em texto aberto.
   app.post('/api/notificacoes/enviar', async (req, reply) => {
     if (!requireRole(req, reply, ['COORDENADOR_LOCAL', 'COORDENADOR_GERAL', 'ADMINISTRADOR_CAMPANHA', 'CONTADOR'])) return;
     const b = (req.body as any) ?? {};
-    if (!b.candidateId || !b.canal) return reply.code(400).send({ erro: 'candidateId e canal obrigatórios' });
+    if (!b.candidateId || !b.canal || !b.destino) {
+      return reply.code(400).send({ erro: 'candidateId, canal e destino obrigatórios' });
+    }
+    const canal = String(b.canal).toUpperCase();
+    if (!['SMS', 'WHATSAPP', 'EMAIL'].includes(canal)) {
+      return reply.code(400).send({ erro: 'canal deve ser SMS | WHATSAPP | EMAIL' });
+    }
     const user = req.user;
-    const idemKey = b.idempotencyKey ?? `notif-${b.candidateId}-${b.canal}-${b.destino ?? ''}-${b.templateKey ?? ''}`;
+    const idemKey = b.idempotencyKey ?? `notif-${b.candidateId}-${canal}-${b.destino}-${b.templateKey ?? ''}`;
+    const mensagem = String(b.mensagem ?? '').slice(0, 500);
+    if (!mensagem) return reply.code(400).send({ erro: 'mensagem obrigatória (sem dados sensíveis)' });
+
     return withIdempotency(idemKey, user.sub, () => withScope(userToScope(user), async (c) => {
-      const n = (await c.query(
+      const inserted = (await c.query(
         `INSERT INTO notification (accounting_office_id, candidate_id, channel, destination_masked, template_key, idempotency_key)
          VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
-        [user.officeId, b.candidateId, b.canal, mask(String(b.destino ?? '')), b.templateKey ?? 'GENERICA', idemKey])).rows[0];
-      await appendLedger(c, { candidateId: b.candidateId, officeId: user.officeId, resourceType: 'notification', resourceId: n?.id ?? idemKey, eventType: 'NOTIFICACAO_ENVIADA', actorUserId: user.sub, actorRole: user.role, payload: { canal: b.canal } });
-      return { status: 'ENVIADA', id: n?.id ?? null, canal: b.canal, mock: true };
+        [user.officeId, b.candidateId, canal, mask(String(b.destino)), b.templateKey ?? 'GENERICA', idemKey])).rows[0];
+
+      let entrega: any;
+      if (canal === 'EMAIL') {
+        entrega = await emailSend({
+          to: String(b.destino),
+          subject: String(b.assunto ?? 'Notificação'),
+          html: `<p>${mensagem.replace(/\n/g, '<br/>')}</p>`,
+          text: mensagem,
+        });
+      } else {
+        entrega = await notifySend({
+          canal: canal as 'SMS' | 'WHATSAPP',
+          to: String(b.destino),
+          message: mensagem,
+        });
+      }
+
+      if (inserted?.id) {
+        await c.query(
+          `INSERT INTO notification_delivery_attempt (notification_id, status, provider_id, error)
+           VALUES ($1,$2,$3,$4)`,
+          [inserted.id, entrega.status, entrega.sid ?? entrega.id ?? null, entrega.erro ?? null]
+        );
+      }
+
+      await appendLedger(c, {
+        candidateId: b.candidateId, officeId: user.officeId,
+        resourceType: 'notification', resourceId: inserted?.id ?? idemKey,
+        eventType: 'NOTIFICACAO_ENVIADA', actorUserId: user.sub, actorRole: user.role,
+        payload: { canal, modo: entrega.modo, status: entrega.status }
+      });
+      return {
+        status: entrega.status,
+        id: inserted?.id ?? null,
+        canal,
+        modo: entrega.modo,
+        providerId: entrega.sid ?? entrega.id ?? null,
+        erro: entrega.erro ?? null,
+      };
     }));
   });
 
