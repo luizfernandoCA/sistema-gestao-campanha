@@ -28,8 +28,8 @@ async function main() {
     execSync('npm run migrate', { stdio: 'inherit' });
     execSync('npm run seed', { stdio: 'inherit' });
   } else {
-    console.log('Schema já existe; aplicando 002 (endurecimento) e 003 (módulos) idempotentes e senha do app_rw.');
-    for (const f of ['002_hardening.sql', '003_modules.sql']) {
+    console.log('Schema já existe; reaplicando migrations idempotentes (002, 003, 004) e senha do app_rw.');
+    for (const f of ['002_hardening.sql', '003_modules.sql', '004_prazos_limites.sql']) {
       await pool.query(fs.readFileSync(path.resolve(process.cwd(), '../db', f), 'utf8'));
     }
     if (appPassword) await pool.query(`ALTER ROLE app_rw LOGIN PASSWORD '${appPassword.replace(/'/g, "''")}'`);
