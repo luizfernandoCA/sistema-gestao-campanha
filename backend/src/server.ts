@@ -44,6 +44,14 @@ app.get('/api/ready', async (_req, reply) => {
 });
 app.get('/api/openapi.json', async () => openapiDoc);
 
+// Tratador de erros global: mapeia id inválido (uuid malformado) p/ 400 e
+// não vaza detalhe interno do banco em 500.
+app.setErrorHandler((err, req, reply) => {
+  if ((err as any).code === '22P02') return reply.code(400).send({ erro: 'identificador inválido' });
+  req.log.error(err);
+  reply.code((err as any).statusCode ?? 500).send({ erro: 'erro interno' });
+});
+
 await app.register(authRoutes);
 await app.register(publicRoutes);
 await app.register(appRoutes);

@@ -46,6 +46,25 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
           WHERE document_id = $1 ORDER BY created_at ASC`, [id])).rows);
   });
 
+  // Visualização do PDF atual do documento (decifrado), no escopo do usuário.
+  // O RLS garante que só candidatos do escopo aparecem; o admin/coordenador
+  // consegue ANALISAR o contrato antes de assinar.
+  app.get('/api/documentos/:id/arquivo', async (req, reply) => {
+    if (!requireRole(req, reply, ['ADMINISTRADOR_CAMPANHA', 'COORDENADOR_GERAL', 'COORDENADOR_LOCAL', 'CONTADOR', 'JURIDICO', 'AUDITOR'])) return;
+    const id = (req.params as any).id;
+    return withScope(userToScope(req.user), async (c) => {
+      const f = (await c.query(
+        `SELECT f.storage_key, f.encrypted_data_key, f.mime_type
+           FROM document_instance d JOIN document_file f ON f.id = d.current_file_id
+          WHERE d.id = $1`, [id])).rows[0];
+      if (!f) return reply.code(404).send({ erro: 'documento fora do escopo ou sem arquivo' });
+      const buf = await getDecrypted(f.storage_key, f.encrypted_data_key);
+      reply.header('Content-Type', f.mime_type || 'application/pdf');
+      reply.header('Content-Disposition', `inline; filename="contrato-${id}.pdf"`);
+      return reply.send(buf);
+    });
+  });
+
   // Verificação do ledger (cadeia de custódia) por candidato
   app.get('/api/auditoria/:candidateId/verificar', async (req) => {
     const candidateId = (req.params as any).candidateId;
