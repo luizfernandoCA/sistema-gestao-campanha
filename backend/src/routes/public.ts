@@ -1,10 +1,23 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { adminPool, withScope, type Scope } from '../core/db.js';
 import { appendLedger } from '../core/audit.js';
 import { transition, WorkflowConflict } from '../core/workflow.js';
-import { sha256, hmac, randomToken } from '../core/crypto.js';
+import { sha256, hmac, encField, decField } from '../core/crypto.js';
 import { putEncrypted } from '../core/storage.js';
 import { renderContractPdf, stripHtml } from '../core/pdf.js';
+
+// Decifra um campo curto, tolerando valor ausente/legado (não quebra a página).
+function safeDec(v: string | null): string {
+  if (!v) return '';
+  try { return decField(v); } catch { return ''; }
+}
+// Escopo da formiguinha (signatário sem login): travado em 1 candidato.
+function formiguinhaScope(sr: { worker_id: string; accounting_office_id: string; candidate_id: string }): Scope {
+  return { userId: sr.worker_id, role: 'FORMIGUINHA', officeId: sr.accounting_office_id, candidateIds: [sr.candidate_id] };
+}
+const formiguinhaUser = (sr: { accounting_office_id: string; candidate_id: string }) =>
+  ({ sub: null as unknown as string, name: 'formiguinha', role: 'FORMIGUINHA', officeId: sr.accounting_office_id, candidateIds: [sr.candidate_id] });
 
 // OTP mock em memória (canal de entrega é simulado). token_hash -> {otp, exp, tentativas}
 const otpStore = new Map<string, { otp: string; exp: number; tentativas: number }>();
@@ -21,6 +34,72 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
          FROM signature_request sr JOIN document_instance d ON d.id = sr.document_id
         WHERE sr.token_hash = $1 AND sr.request_type='REMOTA'`, [th])).rows[0];
   }
+
+  // ---------- Carrega o contexto de assinatura pelo token (sem login) ----------
+  // Devolve o contrato p/ leitura e os dados atuais da pessoa p/ conferência,
+  // e marca o documento como VISUALIZADO_PELA_FORMIGUINHA (best-effort).
+  app.get('/api/publico/assinatura/:token', async (req, reply) => {
+    const token = (req.params as any).token;
+    const sr = await resolveReq(token);
+    if (!sr || sr.status !== 'PENDENTE' || new Date(sr.expires_at) < new Date())
+      return reply.code(404).send({ erro: 'link inválido ou expirado' });
+    return withScope(formiguinhaScope(sr), async (c) => {
+      const row = (await c.query(
+        `SELECT d.status, cc.name AS candidato, w.name_plain, w.cpf_enc, w.phone_enc, w.email_enc, v.content_html
+           FROM document_instance d
+           JOIN candidate cc ON cc.id = d.candidate_id
+           JOIN worker w ON w.id = d.worker_id
+           JOIN contract_template_version v ON v.id = d.contract_template_version_id
+          WHERE d.id = $1`, [sr.document_id])).rows[0];
+      if (!row) return reply.code(404).send({ erro: 'documento indisponível' });
+      try {
+        await transition(c, { id: sr.document_id, candidateId: sr.candidate_id, officeId: sr.accounting_office_id },
+          ['CONTRATO_GERADO', 'ENVIADO_PARA_ASSINATURA'], 'VISUALIZADO_PELA_FORMIGUINHA',
+          formiguinhaUser(sr), 'VISUALIZADO_FORMIGUINHA');
+      } catch (e) { if (!(e instanceof WorkflowConflict)) throw e; }
+      return {
+        candidato: row.candidato,
+        contratoHtml: row.content_html,
+        dados: { nome: row.name_plain ?? '', cpf: safeDec(row.cpf_enc), telefone: safeDec(row.phone_enc), email: safeDec(row.email_enc) },
+        expira_em: sr.expires_at,
+      };
+    });
+  });
+
+  // ---------- A formiguinha preenche/confere os PRÓPRIOS dados ----------
+  const dadosSchema = z.object({
+    nome: z.string().min(1).max(160),
+    cpf: z.string().min(11).max(20),
+    telefone: z.string().max(40).optional().default(''),
+    email: z.string().email().max(160).optional().or(z.literal('')).default(''),
+  });
+  app.post('/api/publico/assinatura/:token/dados', async (req, reply) => {
+    const token = (req.params as any).token;
+    const sr = await resolveReq(token);
+    if (!sr || sr.status !== 'PENDENTE' || new Date(sr.expires_at) < new Date())
+      return reply.code(404).send({ erro: 'link inválido ou expirado' });
+    const p = dadosSchema.safeParse(req.body);
+    if (!p.success) return reply.code(400).send({ erro: 'dados inválidos', detalhe: p.error.issues.map((i) => i.path.join('.') + ': ' + i.message) });
+    const cpf = p.data.cpf.replace(/\D/g, '');
+    if (cpf.length !== 11) return reply.code(400).send({ erro: 'CPF deve ter 11 dígitos' });
+    try {
+      return await withScope(formiguinhaScope(sr), async (c) => {
+        // WHERE travado no worker do token — não dá p/ tocar em outra pessoa.
+        await c.query(
+          `UPDATE worker SET name_plain=$1, name_enc=$2, cpf_hmac=$3, cpf_enc=$4, phone_enc=$5, email_enc=$6 WHERE id=$7`,
+          [p.data.nome, encField(p.data.nome), hmac(cpf), encField(cpf),
+           p.data.telefone ? encField(p.data.telefone) : null,
+           p.data.email ? encField(p.data.email) : null, sr.worker_id]);
+        await appendLedger(c, { candidateId: sr.candidate_id, officeId: sr.accounting_office_id,
+          resourceType: 'worker', resourceId: sr.worker_id, eventType: 'DADOS_FORMIGUINHA_PREENCHIDOS',
+          actorRole: 'FORMIGUINHA', payload: { campos: ['nome', 'cpf', 'telefone', 'email'] } });
+        return { ok: true };
+      });
+    } catch (e: any) {
+      if (e?.code === '23505') return reply.code(409).send({ erro: 'CPF já cadastrado para outra pessoa neste escritório' });
+      throw e;
+    }
+  });
 
   app.post('/api/publico/assinatura/remota/otp', async (req, reply) => {
     const token = (req.body as any)?.token;
@@ -75,7 +154,7 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
         await c.query('UPDATE document_instance SET current_file_id=$1 WHERE id=$2', [nf.id, doc.id]);
         await c.query("UPDATE signature_request SET status='CONCLUIDA' WHERE id=$1", [sr.id]);
         // Ator nulo: o signatário remoto é uma formiguinha (worker), não um app_user.
-        await transition(c, { id: doc.id, candidateId: doc.candidate_id, officeId: doc.accounting_office_id }, ['ENVIADO_PARA_ASSINATURA', 'CONTRATO_GERADO', 'EM_ASSINATURA_ASSISTIDA'], 'AGUARDANDO_ADMINISTRADOR', { sub: null as unknown as string, name: 'formiguinha', role: 'FORMIGUINHA', officeId: doc.accounting_office_id, candidateIds: [doc.candidate_id] }, 'ASSINADA_FORMIGUINHA_REMOTA', { hashBefore, hashAfter: sf.sha256 });
+        await transition(c, { id: doc.id, candidateId: doc.candidate_id, officeId: doc.accounting_office_id }, ['ENVIADO_PARA_ASSINATURA', 'CONTRATO_GERADO', 'EM_ASSINATURA_ASSISTIDA', 'VISUALIZADO_PELA_FORMIGUINHA', 'ACEITE_REGISTRADO'], 'AGUARDANDO_ADMINISTRADOR', { sub: null as unknown as string, name: 'formiguinha', role: 'FORMIGUINHA', officeId: doc.accounting_office_id, candidateIds: [doc.candidate_id] }, 'ASSINADA_FORMIGUINHA_REMOTA', { hashBefore, hashAfter: sf.sha256 });
         otpStore.delete(sha256(token));
         return { status: 'AGUARDANDO_ADMINISTRADOR', hashAfter: sf.sha256 };
       });

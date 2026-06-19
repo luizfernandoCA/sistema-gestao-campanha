@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Assinatura de Contrato</title>
+<style>
+  :root { --azul:#1f4e79; --azul2:#2e6da4; --cinza:#f4f6f9; --borda:#dfe3e8; --txt:#1f2933; --ok:#1b7f4b; --erro:#b3261e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif; color:var(--txt); background:var(--cinza); }
+  header { background:var(--azul); color:#fff; padding:14px 18px; }
+  header h1 { font-size:16px; font-weight:600; margin:0; }
+  main { max-width:560px; margin:16px auto; padding:0 14px 40px; }
+  .card { background:#fff; border:1px solid var(--borda); border-radius:10px; padding:16px 18px; margin-bottom:14px; }
+  .card h2 { font-size:14px; margin:0 0 10px; color:var(--azul); }
+  .step { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:#8a94a6; margin-bottom:4px; }
+  label { display:block; font-size:13px; margin:10px 0 4px; }
+  input { width:100%; padding:11px 12px; border:1px solid var(--borda); border-radius:8px; font-size:15px; }
+  button { background:var(--azul2); color:#fff; border:0; border-radius:8px; padding:12px 16px; font-size:15px; cursor:pointer; width:100%; margin-top:14px; }
+  button:hover { background:var(--azul); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.sec { background:#eef1f5; color:var(--azul); }
+  .contrato { background:#fbfcfd; border:1px solid var(--borda); border-radius:8px; padding:12px 14px; font-size:13px; max-height:220px; overflow:auto; line-height:1.5; }
+  canvas { border:1px dashed #aaa; border-radius:8px; touch-action:none; background:#fff; width:100%; max-width:100%; }
+  .chk { display:flex; gap:8px; align-items:flex-start; font-size:13px; margin:8px 0; }
+  .chk input { width:auto; margin-top:2px; }
+  .msg { padding:10px 12px; border-radius:8px; font-size:13px; margin:10px 0; }
+  .msg.ok { background:#e6f4ec; color:var(--ok); } .msg.erro { background:#fde8e6; color:var(--erro); }
+  .hide { display:none; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:20px; font-size:12px; background:#eef1f5; color:var(--azul); }
+  .center { text-align:center; }
+</style>
+</head>
+<body>
+<header><h1>Assinatura de Contrato de Campanha</h1></header>
+<main>
+  <div id="carregando" class="card center">Carregando o documento…</div>
+  <div id="erroinit" class="card hide"></div>
+
+  <div id="fluxo" class="hide">
+    <div class="card">
+      <p style="margin:0;font-size:13px;">Candidato(a): <span id="cand" class="pill"></span></p>
+    </div>
+
+    <!-- Passo 1: dados -->
+    <div class="card" id="passo1">
+      <div class="step">Passo 1 de 3</div>
+      <h2>Confira e preencha seus dados</h2>
+      <label>Nome completo</label><input id="nome" autocomplete="name" />
+      <label>CPF</label><input id="cpf" inputmode="numeric" autocomplete="off" placeholder="somente números" />
+      <label>Telefone (WhatsApp)</label><input id="telefone" inputmode="tel" autocomplete="tel" />
+      <label>E-mail (opcional)</label><input id="email" inputmode="email" autocomplete="email" />
+      <div id="msg1"></div>
+      <button onclick="salvarDados()">Salvar e continuar</button>
+    </div>
+
+    <!-- Passo 2: leitura + assinatura -->
+    <div class="card hide" id="passo2">
+      <div class="step">Passo 2 de 3</div>
+      <h2>Leia o contrato e assine</h2>
+      <div class="contrato" id="contrato"></div>
+      <div class="chk"><input type="checkbox" id="c1"><label for="c1" style="margin:0">Confirmo que os dados acima são meus e estão corretos</label></div>
+      <div class="chk"><input type="checkbox" id="c2"><label for="c2" style="margin:0">Li e concordo com o contrato</label></div>
+      <div class="chk"><input type="checkbox" id="c3"><label for="c3" style="margin:0">Assino por livre e espontânea vontade</label></div>
+      <label>Assine no quadro abaixo:</label>
+      <canvas id="pad" height="140"></canvas>
+      <button class="sec" onclick="limparPad()">Limpar assinatura</button>
+      <div id="msg2"></div>
+      <button onclick="irOtp()">Continuar</button>
+    </div>
+
+    <!-- Passo 3: código + envio -->
+    <div class="card hide" id="passo3">
+      <div class="step">Passo 3 de 3</div>
+      <h2>Confirme com o código</h2>
+      <p style="font-size:13px;">Enviamos um código de verificação. Digite-o para concluir.</p>
+      <div id="otpdemo"></div>
+      <label>Código de verificação</label><input id="otp" inputmode="numeric" placeholder="6 dígitos" />
+      <div id="msg3"></div>
+      <button onclick="enviar()" id="btnenviar">Assinar e enviar</button>
+    </div>
+  </div>
+
+  <div id="sucesso" class="card center hide">
+    <h2 style="color:var(--ok)">Contrato assinado e enviado! ✓</h2>
+    <p style="font-size:13px;">Seu contrato foi enviado para análise. Você pode fechar esta página.</p>
+    <p style="font-size:11px;color:#8a94a6;">Comprovante (hash): <span id="hash" style="font-family:monospace;word-break:break-all;"></span></p>
+  </div>
+</main>
+<script>
+const TOKEN = decodeURIComponent(location.pathname.replace(/^\/assinar\/?/, '')).trim();
+const $ = (id) => document.getElementById(id);
+function msg(el, txt, ok) { $(el).innerHTML = `<div class="msg ${ok?'ok':'erro'}">${txt}</div>`; }
+function only(el){ const v=$(el); v.value=v.value.replace(/\D/g,''); }
+
+async function api(path, opts={}) {
+  opts.headers = Object.assign({ 'Content-Type':'application/json' }, opts.headers||{});
+  const r = await fetch('/api'+path, opts);
+  const body = await r.json().catch(()=>({}));
+  if (!r.ok) throw new Error(body.erro || ('Erro '+r.status));
+  return body;
+}
+
+async function init() {
+  if (!TOKEN) { $('carregando').classList.add('hide'); $('erroinit').classList.remove('hide'); $('erroinit').innerHTML='<div class="msg erro">Link inválido.</div>'; return; }
+  try {
+    const ctx = await api('/publico/assinatura/'+encodeURIComponent(TOKEN));
+    $('cand').textContent = ctx.candidato || '—';
+    $('contrato').innerHTML = ctx.contratoHtml || '<em>(contrato indisponível)</em>';
+    $('nome').value = ctx.dados.nome || '';
+    $('cpf').value = ctx.dados.cpf || '';
+    $('telefone').value = ctx.dados.telefone || '';
+    $('email').value = ctx.dados.email || '';
+    $('carregando').classList.add('hide'); $('fluxo').classList.remove('hide');
+  } catch(e) {
+    $('carregando').classList.add('hide'); $('erroinit').classList.remove('hide');
+    $('erroinit').innerHTML = `<div class="msg erro">${e.message}</div>`;
+  }
+}
+
+async function salvarDados() {
+  const nome=$('nome').value.trim(), cpf=$('cpf').value.replace(/\D/g,''), telefone=$('telefone').value.trim(), email=$('email').value.trim();
+  if (!nome) return msg('msg1','Informe seu nome completo.', false);
+  if (cpf.length!==11) return msg('msg1','CPF deve ter 11 dígitos.', false);
+  try {
+    await api('/publico/assinatura/'+encodeURIComponent(TOKEN)+'/dados', { method:'POST', body: JSON.stringify({ nome, cpf, telefone, email }) });
+    msg('msg1','Dados salvos.', true);
+    $('passo1').classList.add('hide'); $('passo2').classList.remove('hide');
+    $('passo2').scrollIntoView({behavior:'smooth'}); ajustarPad();
+  } catch(e) { msg('msg1', e.message, false); }
+}
+
+function irOtp() {
+  if (!($('c1').checked && $('c2').checked && $('c3').checked)) return msg('msg2','Marque as três confirmações.', false);
+  if (vazioPad()) return msg('msg2','Faça sua assinatura no quadro.', false);
+  solicitarCodigo();
+  $('passo2').classList.add('hide'); $('passo3').classList.remove('hide');
+  $('passo3').scrollIntoView({behavior:'smooth'});
+}
+
+async function solicitarCodigo() {
+  try {
+    const r = await api('/publico/assinatura/remota/otp', { method:'POST', body: JSON.stringify({ token: TOKEN }) });
+    if (r.otp_mock) $('otpdemo').innerHTML = `<div class="msg ok">Ambiente de teste — seu código é <strong>${r.otp_mock}</strong></div>`;
+  } catch(e) { msg('msg3', e.message, false); }
+}
+
+async function enviar() {
+  const otp = $('otp').value.trim();
+  if (!otp) return msg('msg3','Digite o código.', false);
+  $('btnenviar').disabled = true;
+  try {
+    const r = await api('/publico/assinatura/remota/concluir', { method:'POST', body: JSON.stringify({ token: TOKEN, otp, assinaturaBase64: $('pad').toDataURL('image/png') }) });
+    $('fluxo').classList.add('hide'); $('sucesso').classList.remove('hide');
+    $('hash').textContent = r.hashAfter || '';
+    window.scrollTo({top:0, behavior:'smooth'});
+  } catch(e) { msg('msg3', e.message, false); $('btnenviar').disabled = false; }
+}
+
+// Pad de assinatura
+let ctx2, drawing=false, used=false;
+function ajustarPad(){ const pad=$('pad'); pad.width = pad.offsetWidth; ctx2 = pad.getContext('2d'); ctx2.lineWidth=2; ctx2.lineCap='round'; ctx2.strokeStyle='#10243e'; }
+function pos(e){ const pad=$('pad'); const r=pad.getBoundingClientRect(); const t=e.touches?e.touches[0]:e; return {x:t.clientX-r.left, y:t.clientY-r.top}; }
+function start(e){ drawing=true; const p=pos(e); ctx2.beginPath(); ctx2.moveTo(p.x,p.y); e.preventDefault(); }
+function move(e){ if(!drawing)return; used=true; const p=pos(e); ctx2.lineTo(p.x,p.y); ctx2.stroke(); e.preventDefault(); }
+function end(){ drawing=false; }
+function limparPad(){ if(ctx2){ const pad=$('pad'); ctx2.clearRect(0,0,pad.width,pad.height);} used=false; }
+function vazioPad(){ return !used; }
+['mousedown','touchstart'].forEach(ev=>$('pad').addEventListener(ev,start));
+['mousemove','touchmove'].forEach(ev=>$('pad').addEventListener(ev,move));
+['mouseup','touchend','mouseleave'].forEach(ev=>$('pad').addEventListener(ev,end));
+$('cpf').addEventListener('input', ()=>only('cpf'));
+$('otp').addEventListener('input', ()=>only('otp'));
+init();
+</script>
+</body>
+</html>

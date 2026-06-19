@@ -6,6 +6,13 @@
 		reverse_proxy api:8080
 	}
 
+	# Página pública de assinatura da formiguinha (/assinar/{token})
+	handle /assinar/* {
+		rewrite * /assinar.html
+		root * /srv
+		file_server
+	}
+
 	# Frontend estático (SPA)
 	handle {
 		root * /srv
