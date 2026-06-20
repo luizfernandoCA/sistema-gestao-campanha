@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { withScope } from '../core/db.js';
-import { authenticate, requireRole, userToScope } from '../core/auth.js';
+import { withScope, adminPool } from '../core/db.js';
+import { authenticate, requireRole, userToScope, hashPassword } from '../core/auth.js';
 
 // Cadastros de setup do ESCRITÓRIO: campanhas e candidatos.
 // Ambas as tabelas têm RLS por escritório (p_office_camp / p_office_cand com
@@ -65,5 +65,92 @@ export async function cadastroRoutes(app: FastifyInstance): Promise<void> {
       )).rows[0];
       return { id: r.id, status: r.status };
     });
+  });
+
+  // ---------------- Coordenadores (usuários) ----------------
+  // user_membership NÃO tem RLS (é identidade — gerida pelo adminPool, exceção
+  // como o login). Por isso o escopo é enforçado MANUALMENTE aqui: o admin só
+  // cria coordenadores para candidatos do PRÓPRIO escopo/escritório. Os limites
+  // de cardinalidade (1 coord-geral por candidato, ≤40 coord-locais) são
+  // garantidos no banco (fase 004) e seus erros são mapeados para 409.
+  const COORD_ROLES = ['COORDENADOR_LOCAL', 'COORDENADOR_GERAL'] as const;
+
+  app.get('/api/usuarios', async (req, reply) => {
+    if (!requireRole(req, reply, ['ADMINISTRADOR_CAMPANHA'])) return;
+    const user = req.user;
+    if (user.candidateIds.length === 0) return { candidatos: [], coordenadores: [] };
+    // Candidatos do escopo do admin (para o select), e os coordenadores já criados.
+    const candidatos = (await adminPool.query(
+      'SELECT id, name FROM candidate WHERE id = ANY($1::uuid[]) AND accounting_office_id = $2 ORDER BY name',
+      [user.candidateIds, user.officeId])).rows;
+    const coordenadores = (await adminPool.query(
+      `SELECT u.name, u.email, m.role, m.status, c.name AS candidato
+         FROM user_membership m
+         JOIN app_user u ON u.id = m.user_id
+         JOIN candidate c ON c.id = m.candidate_id
+        WHERE m.accounting_office_id = $1
+          AND m.candidate_id = ANY($2::uuid[])
+          AND m.role = ANY($3::text[])
+          AND m.status = 'ATIVO'
+        ORDER BY c.name, m.role, u.name`,
+      [user.officeId, user.candidateIds, COORD_ROLES as unknown as string[]])).rows;
+    return { candidatos, coordenadores };
+  });
+
+  const userSchema = z.object({
+    name: z.string().min(2).max(160),
+    // E-mail leniente: o sistema usa endereços sem TLD (ex.: admin.ana@demo),
+    // que o z.string().email() rejeitaria. Basta "algo@algo".
+    email: z.string().min(3).max(160).regex(/^[^\s@]+@[^\s@]+$/, 'e-mail inválido'),
+    password: z.string().min(8).max(100),
+    role: z.enum(COORD_ROLES),
+    candidate_id: z.string().uuid(),
+  });
+  app.post('/api/usuarios', async (req, reply) => {
+    if (!requireRole(req, reply, ['ADMINISTRADOR_CAMPANHA'])) return;
+    const p = userSchema.safeParse(req.body);
+    if (!p.success) return reply.code(400).send({ erro: 'payload inválido' });
+    const user = req.user;
+    // Escopo manual: o candidato precisa estar no escopo do admin (adminPool bypassa RLS).
+    if (!user.candidateIds.includes(p.data.candidate_id)) {
+      return reply.code(403).send({ erro: 'candidato fora do seu escopo' });
+    }
+    const client = await adminPool.connect();
+    try {
+      await client.query('BEGIN');
+      // Confirma que o candidato é do escritório do admin e pega a campanha.
+      const cand = (await client.query(
+        'SELECT id, campaign_id FROM candidate WHERE id = $1 AND accounting_office_id = $2',
+        [p.data.candidate_id, user.officeId])).rows[0];
+      if (!cand) { await client.query('ROLLBACK'); return reply.code(404).send({ erro: 'candidato fora do escopo' }); }
+
+      const u = (await client.query(
+        'INSERT INTO app_user (name, email, password_hash) VALUES ($1,$2,$3) RETURNING id',
+        [p.data.name, p.data.email.toLowerCase(), hashPassword(p.data.password)])).rows[0];
+      await client.query(
+        `INSERT INTO user_membership (user_id, accounting_office_id, campaign_id, candidate_id, role)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [u.id, user.officeId, cand.campaign_id, cand.id, p.data.role]);
+      await client.query('COMMIT');
+      return { id: u.id, role: p.data.role };
+    } catch (e: any) {
+      await client.query('ROLLBACK');
+      // Mapeia violações em mensagens claras (sem vazar detalhe do banco).
+      if (e?.code === '23505' && String(e.constraint).includes('email')) {
+        return reply.code(409).send({ erro: 'e-mail já cadastrado' });
+      }
+      if (e?.code === '23505' && String(e.constraint).includes('coord_geral')) {
+        return reply.code(409).send({ erro: 'já existe um COORDENADOR_GERAL para este candidato' });
+      }
+      if (e?.code === '23505' && String(e.constraint).includes('admin')) {
+        return reply.code(409).send({ erro: 'já existe um ADMINISTRADOR_CAMPANHA para este candidato' });
+      }
+      if (e?.code === '23514') { // trigger de limite (≤40 coord-locais)
+        return reply.code(409).send({ erro: 'limite de 40 coordenadores locais por candidato atingido' });
+      }
+      throw e;
+    } finally {
+      client.release();
+    }
   });
 }

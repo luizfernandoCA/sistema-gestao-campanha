@@ -76,6 +76,22 @@
       <div id="cndmsg"></div>
     </div>
 
+    <div class="card hide" id="usuarioscard">
+      <h2>Coordenadores do candidato (administrador)</h2>
+      <p style="font-size:13px;color:#667;margin-top:0;">Limites garantidos no banco: <strong>1 coordenador-geral</strong> e <strong>até 40 coordenadores locais</strong> por candidato.</p>
+      <div id="usuarioslista">carregando…</div>
+      <p style="font-size:13px;color:#667;margin:16px 0 0;font-weight:600;">Novo coordenador</p>
+      <div class="row">
+        <div><label>Nome</label><input id="usrnome" /></div>
+        <div><label>E-mail</label><input id="usremail" /></div>
+        <div><label>Senha</label><input id="usrsenha" type="password" value="Demo@2026" /></div>
+        <div><label>Papel</label><select id="usrpapel"><option value="COORDENADOR_LOCAL">COORDENADOR_LOCAL</option><option value="COORDENADOR_GERAL">COORDENADOR_GERAL</option></select></div>
+        <div><label>Candidato</label><select id="usrcand"></select></div>
+        <div style="flex:0;"><label>&nbsp;</label><button onclick="criarUsuario()">Criar</button></div>
+      </div>
+      <div id="usrmsg"></div>
+    </div>
+
     <div class="card hide" id="importcard">
       <h2>Cadastrar formiguinhas (importação)</h2>
       <p style="font-size:13px;color:#667;margin-top:0;">Uma por linha no formato <code>CPF; Nome; Telefone</code> (telefone opcional). Pré-visualize para ver novos × duplicados, depois confirme — cada formiguinha vira uma atribuição sua.</p>
@@ -180,6 +196,7 @@ function ajustarPorPapel() {
   $('gerarcard').classList.toggle('hide', !['COORDENADOR_LOCAL','COORDENADOR_GERAL','ADMINISTRADOR_CAMPANHA'].includes(ME.papel));
   $('importcard').classList.toggle('hide', !['COORDENADOR_LOCAL','COORDENADOR_GERAL','ADMINISTRADOR_CAMPANHA'].includes(ME.papel));
   $('cadastrocard').classList.toggle('hide', ME.papel!=='ADMINISTRADOR_CAMPANHA');
+  $('usuarioscard').classList.toggle('hide', ME.papel!=='ADMINISTRADOR_CAMPANHA');
   $('exportcard').classList.toggle('hide', !['CONTADOR','JURIDICO','AUDITOR'].includes(ME.papel));
   $('adminfila').classList.toggle('hide', ME.papel!=='ADMINISTRADOR_CAMPANHA');
   $('coordgeralcard').classList.toggle('hide', !['COORDENADOR_GERAL','ADMINISTRADOR_CAMPANHA'].includes(ME.papel));
@@ -199,6 +216,7 @@ async function carregar() {
     }
     await listarDocs();
     if (!$('cadastrocard').classList.contains('hide')) await carregarCampanhas();
+    if (!$('usuarioscard').classList.contains('hide')) await carregarUsuarios();
     if (!$('coordgeralcard').classList.contains('hide')) await carregarCoordGeral();
   } catch(e) { $('dashboard').innerHTML = `<div class="msg erro">${e.message}</div>`; }
 }
@@ -244,6 +262,29 @@ async function listarDocs() {
 async function verContrato(id) {
   try { const blob = await api('/documentos/'+id+'/arquivo'); window.open(URL.createObjectURL(blob), '_blank'); }
   catch(e){ alert('Não foi possível abrir o contrato: '+e.message); }
+}
+async function carregarUsuarios() {
+  try {
+    const d = await api('/usuarios');
+    $('usrcand').innerHTML = d.candidatos.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+    const locais = {}; d.coordenadores.forEach(c=>{ if(c.role==='COORDENADOR_LOCAL') locais[c.candidato]=(locais[c.candidato]||0)+1; });
+    $('usuarioslista').innerHTML = d.coordenadores.length
+      ? '<table><tr><th>Candidato</th><th>Papel</th><th>Nome</th><th>E-mail</th></tr>'
+        + d.coordenadores.map(c=>`<tr><td>${c.candidato}</td><td><span class="pill">${c.role==='COORDENADOR_GERAL'?'GERAL':'LOCAL '+(locais[c.candidato])+'/40'}</span></td><td>${c.name}</td><td>${c.email}</td></tr>`).join('') + '</table>'
+      : '<p style="font-size:13px;color:#667;">Nenhum coordenador cadastrado ainda.</p>';
+  } catch(e) { $('usuarioslista').innerHTML = `<div class="msg erro">${e.message}</div>`; }
+}
+async function criarUsuario() {
+  try {
+    if (!$('usrnome').value.trim() || !$('usremail').value.trim() || !$('usrsenha').value || !$('usrcand').value) {
+      msg('usrmsg','Preencha nome, e-mail, senha e selecione o candidato.', false); return;
+    }
+    await api('/usuarios', { method:'POST', body: JSON.stringify({
+      name:$('usrnome').value.trim(), email:$('usremail').value.trim(), password:$('usrsenha').value,
+      role:$('usrpapel').value, candidate_id:$('usrcand').value }) });
+    msg('usrmsg','Coordenador criado. ✓', true);
+    $('usrnome').value=''; $('usremail').value=''; await carregarUsuarios();
+  } catch(e) { msg('usrmsg', e.message, false); }
 }
 async function carregarCampanhas() {
   try {
