@@ -59,7 +59,6 @@ services:
       DATABASE_URL: postgres://app_rw:${APP_DB_PASSWORD}@db:5432/campanha
       APP_DB_PASSWORD: ${APP_DB_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
-      MASTER_KEY_B64: ${MASTER_KEY_B64}
       HMAC_KEY: ${HMAC_KEY}
       DEMO_PASSWORD: ${DEMO_PASSWORD}
       S3_ENDPOINT: http://minio:9000
@@ -67,6 +66,9 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY}
       S3_BUCKET: documentos
       PUBLIC_BASE_URL: https://${DOMAIN}
+    # Master key via Docker secret (arquivo), não mais em env/.env.
+    secrets:
+      - master_key
 
   caddy:
     image: caddy:2
@@ -89,3 +91,9 @@ volumes:
   caddydata:
   caddyconfig:
   redisdata:
+
+# A master key fica num arquivo no host (chmod 600, fora do git e do .env).
+# Crie secrets/master.key com a chave base64 antes de subir. Ver core/env.ts.
+secrets:
+  master_key:
+    file: ./secrets/master.key

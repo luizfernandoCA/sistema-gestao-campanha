@@ -1,8 +1,22 @@
+import { readFileSync } from 'node:fs';
+
 // Carrega e valida variáveis de ambiente. Sem segredos no código.
 function req(name: string, fallback?: string): string {
   const v = process.env[name] ?? fallback;
   if (v === undefined) throw new Error(`Variável de ambiente ausente: ${name}`);
   return v;
+}
+
+// Master key: prioriza ARQUIVO/Docker secret (não fica no .env nem aparece em
+// `docker inspect`); cai para a env MASTER_KEY_B64 apenas como compatibilidade.
+// O VALOR é o mesmo de antes — muda só a origem da leitura (nada a remigrar).
+function masterKeyB64(): string {
+  const file = process.env.MASTER_KEY_FILE ?? '/run/secrets/master_key';
+  try {
+    const v = readFileSync(file, 'utf8').trim();
+    if (v) return v;
+  } catch { /* arquivo ausente — usa a env como fallback */ }
+  return req('MASTER_KEY_B64');
 }
 
 export const env = {
@@ -13,7 +27,7 @@ export const env = {
   adminDatabaseUrl: req('ADMIN_DATABASE_URL'),
   jwtSecret: req('JWT_SECRET'),
   // Chave mestra do "KMS local" (base64 de 32 bytes) — envelope encryption
-  masterKeyB64: req('MASTER_KEY_B64'),
+  masterKeyB64: masterKeyB64(),
   // Chave para HMAC de CPF/telefone (dedup/busca sem expor o dado)
   hmacKey: req('HMAC_KEY'),
   s3: {
