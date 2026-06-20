@@ -4,6 +4,7 @@ import { adminPool, withScope, type Scope } from '../core/db.js';
 import { appendLedger } from '../core/audit.js';
 import { transition, WorkflowConflict } from '../core/workflow.js';
 import { sha256, hmac, encField, decField } from '../core/crypto.js';
+import { otpSet, otpGet, otpIncrTentativas, otpDel } from '../core/otp.js';
 import { putEncrypted } from '../core/storage.js';
 import { renderContractPdf, stripHtml } from '../core/pdf.js';
 
@@ -19,8 +20,8 @@ function formiguinhaScope(sr: { worker_id: string; accounting_office_id: string;
 const formiguinhaUser = (sr: { accounting_office_id: string; candidate_id: string }) =>
   ({ sub: null as unknown as string, name: 'formiguinha', role: 'FORMIGUINHA', officeId: sr.accounting_office_id, candidateIds: [sr.candidate_id] });
 
-// OTP mock em memória (canal de entrega é simulado). token_hash -> {otp, exp, tentativas}
-const otpStore = new Map<string, { otp: string; exp: number; tentativas: number }>();
+// OTP em Redis (ver core/otp.ts) — sobrevive a restart/escala. O canal de
+// ENTREGA do código segue mock; o que mudou foi onde o desafio é guardado.
 const OTP_MAX_TENTATIVAS = 5;
 
 // Rotas PÚBLICAS (sem login): a posse do token de assinatura remota autoriza
@@ -109,7 +110,7 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
     if (!sr || sr.status !== 'PENDENTE' || new Date(sr.expires_at) < new Date())
       return reply.code(404).send({ erro: 'token inválido ou expirado' });
     const otp = String(Math.floor(100000 + Math.random() * 900000));
-    otpStore.set(sha256(token), { otp, exp: Date.now() + 10 * 60 * 1000, tentativas: 0 });
+    await otpSet(sha256(token), otp, 10 * 60 * 1000);
     // Em produção, enviaria por SMS/WhatsApp; aqui é mock e retorna no corpo.
     return { enviado: true, canal: 'MOCK', otp_mock: otp };
   });
@@ -117,10 +118,10 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/publico/assinatura/remota/concluir', async (req, reply) => {
     const { token, otp, assinaturaBase64 } = (req.body as any) ?? {};
     if (!token || !otp || !assinaturaBase64) return reply.code(400).send({ erro: 'token, otp e assinatura obrigatórios' });
-    const chal = otpStore.get(sha256(token));
-    if (!chal || chal.exp < Date.now()) return reply.code(401).send({ erro: 'OTP inválido ou expirado' });
-    if (chal.tentativas >= OTP_MAX_TENTATIVAS) { otpStore.delete(sha256(token)); return reply.code(429).send({ erro: 'muitas tentativas de OTP; solicite novo código' }); }
-    if (chal.otp !== String(otp)) { chal.tentativas++; return reply.code(401).send({ erro: 'OTP inválido' }); }
+    const chal = await otpGet(sha256(token));
+    if (!chal) return reply.code(401).send({ erro: 'OTP inválido ou expirado' });
+    if (chal.tentativas >= OTP_MAX_TENTATIVAS) { await otpDel(sha256(token)); return reply.code(429).send({ erro: 'muitas tentativas de OTP; solicite novo código' }); }
+    if (chal.otp !== String(otp)) { await otpIncrTentativas(sha256(token)); return reply.code(401).send({ erro: 'OTP inválido' }); }
     const sr = await resolveReq(token);
     if (!sr || sr.status !== 'PENDENTE') return reply.code(404).send({ erro: 'token inválido' });
 
@@ -157,7 +158,7 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
         await c.query("UPDATE signature_request SET status='CONCLUIDA' WHERE id=$1", [sr.id]);
         // Ator nulo: o signatário remoto é uma formiguinha (worker), não um app_user.
         await transition(c, { id: doc.id, candidateId: doc.candidate_id, officeId: doc.accounting_office_id }, ['ENVIADO_PARA_ASSINATURA', 'CONTRATO_GERADO', 'EM_ASSINATURA_ASSISTIDA', 'VISUALIZADO_PELA_FORMIGUINHA', 'ACEITE_REGISTRADO'], 'AGUARDANDO_ADMINISTRADOR', { sub: null as unknown as string, name: 'formiguinha', role: 'FORMIGUINHA', officeId: doc.accounting_office_id, candidateIds: [doc.candidate_id] }, 'ASSINADA_FORMIGUINHA_REMOTA', { hashBefore, hashAfter: sf.sha256 });
-        otpStore.delete(sha256(token));
+        await otpDel(sha256(token));
         return { status: 'AGUARDANDO_ADMINISTRADOR', hashAfter: sf.sha256 };
       });
     } catch (e) {

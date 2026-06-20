@@ -24,6 +24,8 @@ export const env = {
     bucket: process.env.S3_BUCKET ?? 'documentos',
   },
   publicBaseUrl: process.env.PUBLIC_BASE_URL ?? 'http://localhost:8080',
+  // Redis (store de OTP — sobrevive a restart/escala; antes era memória do processo).
+  redisUrl: process.env.REDIS_URL ?? 'redis://redis:6379',
   // Espelhamento do PDF finalizado no Google Drive (destino adicional).
   // Padrão 'log' (mock, sem rede). 'google' exige a credencial abaixo.
   drive: {

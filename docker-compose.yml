@@ -29,6 +29,19 @@ services:
       timeout: 3s
       retries: 20
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # OTP é efêmero (TTL 10min), mas AOF garante que sobrevive a restart do redis.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   api:
     build:
       context: .
@@ -37,8 +50,10 @@ services:
     depends_on:
       db: { condition: service_healthy }
       minio: { condition: service_healthy }
+      redis: { condition: service_healthy }
     environment:
       PORT: 8080
+      REDIS_URL: redis://redis:6379
       DOMAIN: ${DOMAIN}
       ADMIN_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/campanha
       DATABASE_URL: postgres://app_rw:${APP_DB_PASSWORD}@db:5432/campanha
@@ -73,3 +88,4 @@ volumes:
   miniodata:
   caddydata:
   caddyconfig:
+  redisdata:
