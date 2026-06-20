@@ -44,7 +44,7 @@
     <label>E-mail</label><input id="email" value="coord.ana@demo" />
     <label>Senha</label><input id="senha" type="password" value="Demo@2026" />
     <div style="margin-top:14px;"><button onclick="login()">Entrar</button></div>
-    <p style="font-size:12px;color:#667;margin-top:14px;">Logins: coord.ana@demo · admin.ana@demo · contador.alfa@demo · coord.bruno@demo (senha Demo@2026)</p>
+    <p style="font-size:12px;color:#667;margin-top:14px;">Logins: coord.ana@demo · coord.geral@demo · admin.ana@demo · contador.alfa@demo · coord.bruno@demo (senha Demo@2026)</p>
   </div>
 
   <div id="app" class="hide">
@@ -67,6 +67,14 @@
       <h2>Aguardando sua assinatura (administrador)</h2>
       <p style="font-size:13px;color:#667;margin-top:0;">Analise cada contrato (abra o PDF) e assine um a um. Ao assinar, o documento é finalizado.</p>
       <div id="filalista">carregando…</div>
+    </div>
+
+    <div class="card hide" id="coordgeralcard">
+      <h2>Visão do coordenador-geral</h2>
+      <p style="font-size:13px;color:#667;margin-top:0;">Acompanhamento por coordenador local — contratos gerados, em andamento, assinados e <strong>atrasados</strong> (prazo de assinatura vencido sem finalização).</p>
+      <div id="cgresumo">carregando…</div>
+      <h2 style="margin-top:18px;">Alertas de atraso</h2>
+      <div id="cgalertas"></div>
     </div>
 
     <div class="card">
@@ -136,6 +144,7 @@ function ajustarPorPapel() {
   $('gerarcard').classList.toggle('hide', !['COORDENADOR_LOCAL','COORDENADOR_GERAL','ADMINISTRADOR_CAMPANHA'].includes(ME.papel));
   $('exportcard').classList.toggle('hide', !['CONTADOR','JURIDICO','AUDITOR'].includes(ME.papel));
   $('adminfila').classList.toggle('hide', ME.papel!=='ADMINISTRADOR_CAMPANHA');
+  $('coordgeralcard').classList.toggle('hide', !['COORDENADOR_GERAL','ADMINISTRADOR_CAMPANHA'].includes(ME.papel));
 }
 async function carregar() {
   try {
@@ -150,7 +159,23 @@ async function carregar() {
       $('tpl').innerHTML = tpls.map(t=>`<option value="${t.id}">${t.name} v${t.version_number}</option>`).join('');
     }
     await listarDocs();
+    if (!$('coordgeralcard').classList.contains('hide')) await carregarCoordGeral();
   } catch(e) { $('dashboard').innerHTML = `<div class="msg erro">${e.message}</div>`; }
+}
+async function carregarCoordGeral() {
+  try {
+    const v = await api('/coord-geral/visao');
+    $('cgresumo').innerHTML = v.porCoordenador.length
+      ? '<table><tr><th>Coordenador</th><th>Atribuições</th><th>Gerados</th><th>Em andamento</th><th>Assinados</th><th>Atrasados</th></tr>'
+        + v.porCoordenador.map(r=>`<tr><td>${r.coordenador}</td><td>${r.atribuicoes}</td><td>${r.gerados}</td><td>${r.enviados}</td><td>${r.assinados}</td>`
+          + `<td>${r.atrasados>0?`<strong style="color:var(--erro)">${r.atrasados}</strong>`:'0'}</td></tr>`).join('') + '</table>'
+      : '<p style="font-size:13px;color:#667;">Nenhuma atribuição no seu escopo.</p>';
+    $('cgalertas').innerHTML = v.alertas.length
+      ? '<table><tr><th>Candidato</th><th>Formiguinha</th><th>Coordenador</th><th>Venceu em</th><th>Dias em atraso</th></tr>'
+        + v.alertas.map(a=>`<tr><td>${a.candidato}</td><td>${a.formiguinha}</td><td>${a.coordenador}</td><td>${(a.prazo||'').slice(0,10)}</td>`
+          + `<td><strong style="color:var(--erro)">${a.dias_atraso}</strong></td></tr>`).join('') + '</table>'
+      : '<p class="msg ok">Nenhum atraso. Tudo dentro do prazo. ✓</p>';
+  } catch(e) { $('cgresumo').innerHTML = `<div class="msg erro">${e.message}</div>`; $('cgalertas').innerHTML=''; }
 }
 const ADMIN_PENDENTE = ['AGUARDANDO_ADMINISTRADOR','ASSINADO_PELA_FORMIGUINHA'];
 async function listarDocs() {

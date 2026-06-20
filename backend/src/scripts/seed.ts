@@ -23,8 +23,9 @@ async function main() {
     const office1 = (await c.query(`INSERT INTO accounting_office (legal_name, document_number) VALUES ('Escritório Contábil Alfa','11.111.111/0001-11') RETURNING id`)).rows[0].id;
     const office2 = (await c.query(`INSERT INTO accounting_office (legal_name, document_number) VALUES ('Escritório Contábil Beta','22.222.222/0001-22') RETURNING id`)).rows[0].id;
 
-    const camp1 = (await c.query(`INSERT INTO campaign (accounting_office_id, election_year, election_type, state) VALUES ($1,2026,'MUNICIPAL','SP') RETURNING id`, [office1])).rows[0].id;
-    const camp2 = (await c.query(`INSERT INTO campaign (accounting_office_id, election_year, election_type, state) VALUES ($1,2026,'MUNICIPAL','RJ') RETURNING id`, [office2])).rows[0].id;
+    // Prazos/SLA padrão da campanha (fase 004): 3 dias p/ envio, 7 p/ assinatura.
+    const camp1 = (await c.query(`INSERT INTO campaign (accounting_office_id, election_year, election_type, state, prazo_envio_dias, prazo_assinatura_dias) VALUES ($1,2026,'MUNICIPAL','SP',3,7) RETURNING id`, [office1])).rows[0].id;
+    const camp2 = (await c.query(`INSERT INTO campaign (accounting_office_id, election_year, election_type, state, prazo_envio_dias, prazo_assinatura_dias) VALUES ($1,2026,'MUNICIPAL','RJ',3,7) RETURNING id`, [office2])).rows[0].id;
 
     const candA = (await c.query(`INSERT INTO candidate (accounting_office_id, campaign_id, name, candidate_number, party) VALUES ($1,$2,'Ana Eleitoral','12345','PARTIDO A') RETURNING id`, [office1, camp1])).rows[0].id;
     const candB = (await c.query(`INSERT INTO candidate (accounting_office_id, campaign_id, name, candidate_number, party) VALUES ($1,$2,'Bruno Candidato','54321','PARTIDO B') RETURNING id`, [office1, camp1])).rows[0].id;
@@ -43,6 +44,7 @@ async function main() {
     await user('Contador Beta', 'contador.beta@demo', office2, 'CONTADOR', null, null);
     const coordA = await user('Coord. Ana', 'coord.ana@demo', office1, 'COORDENADOR_LOCAL', candA, camp1);
     const coordB = await user('Coord. Bruno', 'coord.bruno@demo', office1, 'COORDENADOR_LOCAL', candB, camp1);
+    await user('Coord. Geral', 'coord.geral@demo', office1, 'COORDENADOR_GERAL', candA, camp1);
     await user('Admin Ana', 'admin.ana@demo', office1, 'ADMINISTRADOR_CAMPANHA', candA, camp1);
     await user('Suporte', 'suporte@demo', office1, 'SUPORTE_INTERNO', null, null);
     await user('Auditor', 'auditor@demo', office1, 'AUDITOR', null, null);
@@ -81,12 +83,17 @@ async function main() {
     await doc(office1, camp1, candA, coordA, wa1.w, 'AGUARDANDO_ADMINISTRADOR');
     await doc(office1, camp1, candB, coordB, wa1.w, 'CONTRATO_GERADO');
 
+    // Demonstração da fiscalização de atraso: atribuição com prazo vencido e
+    // sem documento FINALIZADO -> aparece nos alertas do coordenador-geral.
+    await c.query(`UPDATE worker_assignment SET prazo_assinatura = now() - interval '5 days' WHERE id = $1`, [wa1.wa]);
+
     await c.query('COMMIT');
     console.log('Seed concluído.');
     console.log('--- Logins de demonstração (senha:', SENHA, ') ---');
     console.log('contador.alfa@demo   (CONTADOR, vê candidatos A e B)');
     console.log('coord.ana@demo       (COORDENADOR_LOCAL, candidato A)');
     console.log('coord.bruno@demo     (COORDENADOR_LOCAL, candidato B)');
+    console.log('coord.geral@demo     (COORDENADOR_GERAL, candidato A)');
     console.log('admin.ana@demo       (ADMINISTRADOR_CAMPANHA, candidato A)');
     console.log('contador.beta@demo   (CONTADOR, escritório 2, candidato C)');
     console.log('IDs: A=' + candA + ' B=' + candB + ' C=' + candC + ' atribuicaoA=' + wa1.wa + ' templateV=' + tvOffice1);

@@ -88,6 +88,73 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
            JOIN worker w ON w.id = wa.worker_id
           WHERE wa.status = 'ATIVO' ORDER BY c.name LIMIT 500`)).rows));
 
+  // ---------------- Visão do Coordenador Geral (fiscalização + atraso) ----------------
+  // Agrega por coordenador local, dentro do escopo (o RLS já limita ao candidato
+  // do coordenador-geral). O atraso é DERIVADO dos prazos da fase 004 — não há
+  // status materializado:
+  //   prazo_efetivo = COALESCE(wa.prazo_assinatura, wa.created_at + camp.prazo_assinatura_dias dias)
+  //   em_atraso     = prazo_efetivo < now() E não há documento FINALIZADO para a atribuição
+  //                   (worker+candidato). Sem prazo definido => nunca em atraso.
+  const PRAZO_EFETIVO =
+    `COALESCE(wa.prazo_assinatura, wa.created_at + make_interval(days => camp.prazo_assinatura_dias))`;
+  const EM_ANDAMENTO = [
+    'ENVIADO_PARA_ASSINATURA', 'EM_ASSINATURA_ASSISTIDA', 'VISUALIZADO_PELA_FORMIGUINHA',
+    'ACEITE_REGISTRADO', 'ASSINADO_PELA_FORMIGUINHA', 'AGUARDANDO_ADMINISTRADOR', 'ASSINADO_PELO_ADMINISTRADOR',
+  ];
+  app.get('/api/coord-geral/visao', async (req, reply) => {
+    if (!requireRole(req, reply, ['COORDENADOR_GERAL', 'ADMINISTRADOR_CAMPANHA'])) return;
+    return withScope(userToScope(req.user), async (c) => {
+      const porCoordenador = (await c.query(
+        `WITH doc AS (
+           SELECT candidate_id, worker_id,
+                  bool_or(status = 'FINALIZADO')                         AS tem_finalizado,
+                  count(*) FILTER (WHERE status = 'CONTRATO_GERADO')::int AS gerados,
+                  count(*) FILTER (WHERE status = ANY($1::text[]))::int   AS enviados,
+                  count(*) FILTER (WHERE status = 'FINALIZADO')::int      AS assinados
+             FROM document_instance GROUP BY candidate_id, worker_id)
+         SELECT wa.coordinator_local_id                  AS id,
+                COALESCE(u.name, '(sem coordenador)')    AS coordenador,
+                count(*)::int                            AS atribuicoes,
+                COALESCE(sum(d.gerados), 0)::int         AS gerados,
+                COALESCE(sum(d.enviados), 0)::int        AS enviados,
+                COALESCE(sum(d.assinados), 0)::int       AS assinados,
+                count(*) FILTER (
+                  WHERE NOT COALESCE(d.tem_finalizado, false)
+                    AND ${PRAZO_EFETIVO} < now())::int   AS atrasados
+           FROM worker_assignment wa
+           JOIN campaign camp ON camp.id = wa.campaign_id
+           LEFT JOIN app_user u ON u.id = wa.coordinator_local_id
+           LEFT JOIN doc d ON d.candidate_id = wa.candidate_id AND d.worker_id = wa.worker_id
+          WHERE wa.status = 'ATIVO'
+            AND wa.candidate_id = ANY(app_candidate_ids())
+          GROUP BY wa.coordinator_local_id, u.name
+          ORDER BY atrasados DESC, coordenador`, [EM_ANDAMENTO])).rows;
+
+      const alertas = (await c.query(
+        `SELECT wa.id,
+                cand.name    AS candidato,
+                w.name_plain AS formiguinha,
+                COALESCE(u.name, '(sem coordenador)') AS coordenador,
+                ${PRAZO_EFETIVO} AS prazo,
+                GREATEST(0, EXTRACT(day FROM now() - ${PRAZO_EFETIVO}))::int AS dias_atraso
+           FROM worker_assignment wa
+           JOIN campaign camp ON camp.id = wa.campaign_id
+           JOIN candidate cand ON cand.id = wa.candidate_id
+           JOIN worker w ON w.id = wa.worker_id
+           LEFT JOIN app_user u ON u.id = wa.coordinator_local_id
+          WHERE wa.status = 'ATIVO'
+            AND wa.candidate_id = ANY(app_candidate_ids())
+            AND ${PRAZO_EFETIVO} < now()
+            AND NOT EXISTS (SELECT 1 FROM document_instance di
+                             WHERE di.candidate_id = wa.candidate_id
+                               AND di.worker_id = wa.worker_id
+                               AND di.status = 'FINALIZADO')
+          ORDER BY prazo ASC LIMIT 200`)).rows;
+
+      return { porCoordenador, alertas };
+    });
+  });
+
   // ---------------- Geração de documento ----------------
   const gerarSchema = z.object({ workerAssignmentId: z.string().uuid(), templateVersionId: z.string().uuid() });
   app.post('/api/documentos/gerar', async (req, reply) => {
