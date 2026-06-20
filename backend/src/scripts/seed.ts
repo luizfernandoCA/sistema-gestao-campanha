@@ -63,8 +63,8 @@ async function main() {
 
     // Workers + atribuições
     async function worker(office: string, campaign: string, candidate: string, coordUser: string, nome: string, cpf: string) {
-      const w = (await c.query(`INSERT INTO worker (accounting_office_id, cpf_hmac, cpf_enc, name_plain, name_enc) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-        [office, hmac(cpf), encField(cpf), nome, encField(nome)])).rows[0].id;
+      const w = (await c.query(`INSERT INTO worker (accounting_office_id, cpf_hmac, cpf_enc, name_enc) VALUES ($1,$2,$3,$4) RETURNING id`,
+        [office, hmac(cpf), encField(cpf), encField(nome)])).rows[0].id;
       const wa = (await c.query(`INSERT INTO worker_assignment (accounting_office_id, campaign_id, candidate_id, municipality_id, coordinator_local_id, worker_id, created_by) VALUES ($1,$2,$3,$4,$5,$6,$5) RETURNING id`,
         [office, campaign, candidate, mun, coordUser, w])).rows[0].id;
       return { w, wa };

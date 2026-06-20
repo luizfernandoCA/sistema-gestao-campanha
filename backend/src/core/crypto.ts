@@ -69,3 +69,10 @@ export function decField(stored: string): string {
   const dataKey = gcmDecrypt(MASTER_KEY, Buffer.from(edk, 'base64'));
   return gcmDecrypt(dataKey, Buffer.from(ct, 'base64')).toString('utf8');
 }
+
+// Versão tolerante p/ EXIBIÇÃO: nunca lança (campo nulo/legado/corrompido vira
+// ''), evitando que uma única linha ruim derrube uma listagem inteira.
+export function decFieldSafe(stored: string | null | undefined): string {
+  if (!stored) return '';
+  try { return decField(stored); } catch { return ''; }
+}

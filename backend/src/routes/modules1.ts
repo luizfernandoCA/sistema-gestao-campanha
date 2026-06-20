@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { withScope } from '../core/db.js';
 import { authenticate, requireRole, userToScope } from '../core/auth.js';
 import { appendLedger } from '../core/audit.js';
-import { sha256, hmac, encField } from '../core/crypto.js';
+import { sha256, hmac, encField, decFieldSafe } from '../core/crypto.js';
 import { withIdempotency, mask } from '../core/util.js';
 import { renderContractPdf, stripHtml } from '../core/pdf.js';
 import { putEncrypted } from '../core/storage.js';
@@ -35,9 +35,11 @@ export async function modules1(app: FastifyInstance): Promise<void> {
         const existe = (await c.query('SELECT 1 FROM worker WHERE accounting_office_id=$1 AND cpf_hmac=$2', [user.officeId, ch])).rowCount;
         const st = existe ? 'DUPLICADO' : 'NOVO';
         if (existe) dups++; else novos++;
+        // O nome é gravado CIFRADO na staging (a coluna name_plain passa a guardar
+        // o envelope, não o texto puro) — sem nome em claro nem na importação.
         await c.query(
           `INSERT INTO bulk_import_row (batch_id, accounting_office_id, candidate_id, cpf_hmac, name_plain, status)
-           VALUES ($1,$2,$3,$4,$5,$6)`, [batch.id, user.officeId, cand.id, ch, l.nome, st]);
+           VALUES ($1,$2,$3,$4,$5,$6)`, [batch.id, user.officeId, cand.id, ch, encField(l.nome), st]);
       }
       await c.query('UPDATE bulk_import_batch SET inserted=$1, duplicates=$2 WHERE id=$3', [novos, dups, batch.id]);
       await appendLedger(c, { candidateId: cand.id, officeId: user.officeId, resourceType: 'import', resourceId: batch.id, eventType: 'IMPORT_PREVIA', actorUserId: user.sub, actorRole: user.role, payload: { total: p.data.linhas.length, novos, dups } });
@@ -58,10 +60,11 @@ export async function modules1(app: FastifyInstance): Promise<void> {
       const rows = (await c.query("SELECT id, cpf_hmac, name_plain FROM bulk_import_row WHERE batch_id=$1 AND status='NOVO'", [batchId])).rows;
       let criados = 0;
       for (const r of rows) {
+        // r.name_plain já vem CIFRADO da staging -> vai direto p/ name_enc; name_plain fica NULL.
         const w = (await c.query(
-          `INSERT INTO worker (accounting_office_id, cpf_hmac, name_plain, name_enc) VALUES ($1,$2,$3,$4)
+          `INSERT INTO worker (accounting_office_id, cpf_hmac, name_enc) VALUES ($1,$2,$3)
            ON CONFLICT (accounting_office_id, cpf_hmac) DO NOTHING RETURNING id`,
-          [user.officeId, r.cpf_hmac, r.name_plain, encField(r.name_plain ?? '')])).rows[0];
+          [user.officeId, r.cpf_hmac, r.name_plain])).rows[0];
         if (w) {
           await c.query(
             `INSERT INTO worker_assignment (accounting_office_id, campaign_id, candidate_id, coordinator_local_id, worker_id, created_by)
@@ -84,7 +87,7 @@ export async function modules1(app: FastifyInstance): Promise<void> {
     const user = req.user;
     return withScope(userToScope(user), async (c) => {
       const o = (await c.query(
-        `SELECT d.*, w.name_plain, cc.name AS cand_name, v.content_html
+        `SELECT d.*, w.name_enc, cc.name AS cand_name, v.content_html
            FROM document_instance d JOIN worker w ON w.id=d.worker_id
            JOIN candidate cc ON cc.id=d.candidate_id
            JOIN contract_template_version v ON v.id=d.contract_template_version_id
@@ -97,7 +100,7 @@ export async function modules1(app: FastifyInstance): Promise<void> {
          VALUES ($1,$2,$3,$4,$5,$6,$7,'CONTRATO_GERADO',$8,$9,$10,$11) RETURNING id`,
         [o.accounting_office_id, o.campaign_id, o.candidate_id, o.municipality_id, user.sub, o.worker_id,
          o.contract_template_version_id, o.id, groupId, (o.version ?? 1) + 1, user.sub])).rows[0];
-      const pdf = await renderContractPdf({ title: 'Contrato de Prestação de Serviços de Campanha (Reemissão)', candidate: o.cand_name, worker: o.name_plain, bodyText: stripHtml(o.content_html) });
+      const pdf = await renderContractPdf({ title: 'Contrato de Prestação de Serviços de Campanha (Reemissão)', candidate: o.cand_name, worker: decFieldSafe(o.name_enc), bodyText: stripHtml(o.content_html) });
       const key = `office/${o.accounting_office_id}/cand/${o.candidate_id}/doc/${novo.id}/contrato.pdf`;
       const sf = await putEncrypted(key, pdf);
       const file = (await c.query(

@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { withScope } from '../core/db.js';
 import { authenticate, requireRole, userToScope } from '../core/auth.js';
 import { appendLedger } from '../core/audit.js';
-import { sha256 } from '../core/crypto.js';
+import { sha256, decFieldSafe } from '../core/crypto.js';
 import { mask } from '../core/util.js';
 
 // LGPD (22), suporte seguro (23), incidente (25), auditoria externa (28).
@@ -80,8 +80,8 @@ export async function modules3(app: FastifyInstance): Promise<void> {
       const s = (await c.query("SELECT id, candidate_id FROM support_access_session WHERE request_id=$1 AND status='ATIVA' AND expires_at > now()", [reqId])).rows[0];
       if (!s) return reply.code(403).send({ erro: 'sem sessão de suporte aprovada/ativa' });
       await c.query(`INSERT INTO support_action_log (accounting_office_id, session_id, action) VALUES ($1,$2,'LEITURA_DADOS')`, [user.officeId, s.id]);
-      const ws = (await c.query('SELECT name_plain FROM worker w JOIN worker_assignment wa ON wa.worker_id=w.id WHERE wa.candidate_id=$1 LIMIT 20', [s.candidate_id])).rows;
-      return { candidato: s.candidate_id, dados_mascarados: ws.map((w: any) => mask(w.name_plain ?? '', 3)) };
+      const ws = (await c.query('SELECT name_enc FROM worker w JOIN worker_assignment wa ON wa.worker_id=w.id WHERE wa.candidate_id=$1 LIMIT 20', [s.candidate_id])).rows;
+      return { candidato: s.candidate_id, dados_mascarados: ws.map((w: any) => mask(decFieldSafe(w.name_enc), 3)) };
     });
   });
 

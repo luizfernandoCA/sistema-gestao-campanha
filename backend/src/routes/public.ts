@@ -45,7 +45,7 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(404).send({ erro: 'link inválido ou expirado' });
     return withScope(formiguinhaScope(sr), async (c) => {
       const row = (await c.query(
-        `SELECT d.status, cc.name AS candidato, w.name_plain, w.cpf_enc, w.phone_enc, w.email_enc, v.content_html
+        `SELECT d.status, cc.name AS candidato, w.name_enc, w.cpf_enc, w.phone_enc, w.email_enc, v.content_html
            FROM document_instance d
            JOIN candidate cc ON cc.id = d.candidate_id
            JOIN worker w ON w.id = d.worker_id
@@ -60,7 +60,7 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
       return {
         candidato: row.candidato,
         contratoHtml: row.content_html,
-        dados: { nome: row.name_plain ?? '', cpf: safeDec(row.cpf_enc), telefone: safeDec(row.phone_enc), email: safeDec(row.email_enc) },
+        dados: { nome: safeDec(row.name_enc), cpf: safeDec(row.cpf_enc), telefone: safeDec(row.phone_enc), email: safeDec(row.email_enc) },
         expira_em: sr.expires_at,
       };
     });
@@ -85,9 +85,10 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
     try {
       return await withScope(formiguinhaScope(sr), async (c) => {
         // WHERE travado no worker do token — não dá p/ tocar em outra pessoa.
+        // Grava só cifrado; name_plain=NULL zera qualquer claro legado da linha.
         await c.query(
-          `UPDATE worker SET name_plain=$1, name_enc=$2, cpf_hmac=$3, cpf_enc=$4, phone_enc=$5, email_enc=$6 WHERE id=$7`,
-          [p.data.nome, encField(p.data.nome), hmac(cpf), encField(cpf),
+          `UPDATE worker SET name_enc=$1, name_plain=NULL, cpf_hmac=$2, cpf_enc=$3, phone_enc=$4, email_enc=$5 WHERE id=$6`,
+          [encField(p.data.nome), hmac(cpf), encField(cpf),
            p.data.telefone ? encField(p.data.telefone) : null,
            p.data.email ? encField(p.data.email) : null, sr.worker_id]);
         await appendLedger(c, { candidateId: sr.candidate_id, officeId: sr.accounting_office_id,
@@ -128,15 +129,16 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
       return await withScope(scope, async (c) => {
         const doc = (await c.query(
           `SELECT d.id, d.candidate_id, d.accounting_office_id, d.worker_id, f.sha256_hash,
-                  cc.name AS cand, w.name_plain AS worker, v.content_html
+                  cc.name AS cand, w.name_enc AS worker_enc, v.content_html
              FROM document_instance d JOIN document_file f ON f.id=d.current_file_id
              JOIN candidate cc ON cc.id=d.candidate_id JOIN worker w ON w.id=d.worker_id
              JOIN contract_template_version v ON v.id=d.contract_template_version_id
             WHERE d.id=$1`, [sr.document_id])).rows[0];
         if (!doc) return reply.code(404).send({ erro: 'documento indisponível' });
+        const workerNome = safeDec(doc.worker_enc);
         const hashBefore = doc.sha256_hash;
         const signedAt = new Date().toISOString();
-        const sealed = await renderContractPdf({ title: 'Contrato de Prestação de Serviços de Campanha', candidate: doc.cand, worker: doc.worker, bodyText: stripHtml(doc.content_html), signatures: [{ who: `Formiguinha (remota) ${doc.worker}`, at: signedAt, hash: hashBefore }] });
+        const sealed = await renderContractPdf({ title: 'Contrato de Prestação de Serviços de Campanha', candidate: doc.cand, worker: workerNome, bodyText: stripHtml(doc.content_html), signatures: [{ who: `Formiguinha (remota) ${workerNome}`, at: signedAt, hash: hashBefore }] });
         const key = `office/${doc.accounting_office_id}/cand/${doc.candidate_id}/doc/${doc.id}/contrato-assinado-remota.pdf`;
         const sf = await putEncrypted(key, sealed);
         const nf = (await c.query(

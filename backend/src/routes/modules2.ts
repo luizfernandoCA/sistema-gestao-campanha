@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { withScope } from '../core/db.js';
 import { authenticate, requireRole, userToScope } from '../core/auth.js';
 import { appendLedger } from '../core/audit.js';
-import { sha256, randomToken, envelopeEncrypt } from '../core/crypto.js';
+import { sha256, randomToken, envelopeEncrypt, decFieldSafe } from '../core/crypto.js';
 import { withIdempotency } from '../core/util.js';
 
 // Exceção em papel (10), offline-first (19), antifraude (20), IA/OCR (21).
@@ -145,7 +145,7 @@ export async function modules2(app: FastifyInstance): Promise<void> {
       const cand = candidateId ?? (await c.query('SELECT candidate_id FROM document_instance WHERE id=$1', [documentId])).rows[0]?.candidate_id;
       if (!cand) return reply.code(404).send({ erro: 'documento/candidato fora do escopo' });
       let nomeBanco = '';
-      if (documentId) nomeBanco = (await c.query('SELECT w.name_plain FROM document_instance d JOIN worker w ON w.id=d.worker_id WHERE d.id=$1', [documentId])).rows[0]?.name_plain ?? '';
+      if (documentId) nomeBanco = decFieldSafe((await c.query('SELECT w.name_enc FROM document_instance d JOIN worker w ON w.id=d.worker_id WHERE d.id=$1', [documentId])).rows[0]?.name_enc);
       const extraido = String(textoExtraido ?? nomeBanco);
       const divergente = !!nomeBanco && !extraido.toLowerCase().includes(nomeBanco.toLowerCase().split(' ')[0]);
       const job = (await c.query(

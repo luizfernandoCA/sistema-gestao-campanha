@@ -8,7 +8,7 @@ import { transition, WorkflowConflict } from '../core/workflow.js';
 import { putEncrypted, getDecrypted } from '../core/storage.js';
 import { pushDocumentToDrive } from '../core/drive.js';
 import { renderContractPdf, stripHtml } from '../core/pdf.js';
-import { sha256, hmac, randomToken, encField } from '../core/crypto.js';
+import { sha256, hmac, randomToken, encField, decFieldSafe } from '../core/crypto.js';
 
 export async function appRoutes(app: FastifyInstance): Promise<void> {
   // Todas as rotas deste plugin exigem autenticação.
@@ -32,12 +32,16 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/documentos', async (req) =>
     withScope(userToScope(req.user), async (c) =>
       (await c.query(
-        `SELECT d.id, d.status, d.candidate_id, c.name AS candidato, w.name_plain AS formiguinha,
+        `SELECT d.id, d.status, d.candidate_id, c.name AS candidato, w.name_enc AS formiguinha_enc,
                 d.created_at
            FROM document_instance d
            JOIN candidate c ON c.id = d.candidate_id
            JOIN worker w ON w.id = d.worker_id
-          ORDER BY d.created_at DESC LIMIT 200`)).rows));
+          ORDER BY d.created_at DESC LIMIT 200`)).rows
+        .map((r: any) => ({
+          id: r.id, status: r.status, candidate_id: r.candidate_id, candidato: r.candidato,
+          formiguinha: decFieldSafe(r.formiguinha_enc), created_at: r.created_at,
+        }))));
 
   app.get('/api/documentos/:id/timeline', async (req) => {
     const id = (req.params as any).id;
@@ -83,11 +87,15 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/atribuicoes', async (req) =>
     withScope(userToScope(req.user), async (c) =>
       (await c.query(
-        `SELECT wa.id, wa.candidate_id, c.name AS candidato, w.name_plain AS formiguinha
+        `SELECT wa.id, wa.candidate_id, c.name AS candidato, w.name_enc AS formiguinha_enc
            FROM worker_assignment wa
            JOIN candidate c ON c.id = wa.candidate_id
            JOIN worker w ON w.id = wa.worker_id
-          WHERE wa.status = 'ATIVO' ORDER BY c.name LIMIT 500`)).rows));
+          WHERE wa.status = 'ATIVO' ORDER BY c.name LIMIT 500`)).rows
+        .map((r: any) => ({
+          id: r.id, candidate_id: r.candidate_id, candidato: r.candidato,
+          formiguinha: decFieldSafe(r.formiguinha_enc),
+        }))));
 
   // ---------------- Visão do Coordenador Geral (fiscalização + atraso) ----------------
   // Agrega por coordenador local, dentro do escopo (o RLS já limita ao candidato
@@ -133,8 +141,8 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
 
       const alertas = (await c.query(
         `SELECT wa.id,
-                cand.name    AS candidato,
-                w.name_plain AS formiguinha,
+                cand.name   AS candidato,
+                w.name_enc  AS formiguinha_enc,
                 COALESCE(u.name, '(sem coordenador)') AS coordenador,
                 ${PRAZO_EFETIVO} AS prazo,
                 GREATEST(0, EXTRACT(day FROM now() - ${PRAZO_EFETIVO}))::int AS dias_atraso
@@ -150,7 +158,11 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
                              WHERE di.candidate_id = wa.candidate_id
                                AND di.worker_id = wa.worker_id
                                AND di.status = 'FINALIZADO')
-          ORDER BY prazo ASC LIMIT 200`)).rows;
+          ORDER BY prazo ASC LIMIT 200`)).rows
+        .map((r: any) => ({
+          id: r.id, candidato: r.candidato, formiguinha: decFieldSafe(r.formiguinha_enc),
+          coordenador: r.coordenador, prazo: r.prazo, dias_atraso: r.dias_atraso,
+        }));
 
       return { porCoordenador, alertas };
     });
@@ -165,16 +177,17 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     const user = req.user;
     return withScope(userToScope(user), async (c) => {
       const wa = (await c.query(
-        `SELECT wa.*, w.name_plain, c.name AS cand_name
+        `SELECT wa.*, w.name_enc, c.name AS cand_name
            FROM worker_assignment wa JOIN worker w ON w.id = wa.worker_id
            JOIN candidate c ON c.id = wa.candidate_id WHERE wa.id = $1`, [p.data.workerAssignmentId])).rows[0];
       if (!wa) return reply.code(404).send({ erro: 'atribuição não encontrada no seu escopo' });
+      const formiguinhaNome = decFieldSafe(wa.name_enc);
       const tv = (await c.query(
         `SELECT v.*, t.accounting_office_id FROM contract_template_version v
            JOIN contract_template t ON t.id = v.template_id WHERE v.id = $1`, [p.data.templateVersionId])).rows[0];
       if (!tv) return reply.code(404).send({ erro: 'template não encontrado' });
 
-      const snapshot = { formiguinha: wa.name_plain, candidato: wa.cand_name, template_versao: tv.version_number };
+      const snapshot = { formiguinha: formiguinhaNome, candidato: wa.cand_name, template_versao: tv.version_number };
       const snapshotHash = sha256(JSON.stringify(snapshot));
 
       const doc = (await c.query(
@@ -191,7 +204,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
 
       const pdf = await renderContractPdf({
         title: 'Contrato de Prestação de Serviços de Campanha',
-        candidate: wa.cand_name, worker: wa.name_plain, bodyText: stripHtml(tv.content_html),
+        candidate: wa.cand_name, worker: formiguinhaNome, bodyText: stripHtml(tv.content_html),
       });
       const key = `office/${wa.accounting_office_id}/cand/${wa.candidate_id}/doc/${doc.id}/contrato.pdf`;
       const sf = await putEncrypted(key, pdf);
@@ -256,7 +269,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     return withScope(userToScope(user), async (c) => {
       const doc = (await c.query(
         `SELECT d.id, d.candidate_id, d.accounting_office_id, d.worker_id, d.current_file_id,
-                f.sha256_hash, f.storage_key, c.name AS cand, w.name_plain AS worker, v.content_html
+                f.sha256_hash, f.storage_key, c.name AS cand, w.name_enc AS worker_enc, v.content_html
            FROM document_instance d
            JOIN document_file f ON f.id = d.current_file_id
            JOIN candidate c ON c.id = d.candidate_id
@@ -265,13 +278,14 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
           WHERE d.id = $1`, [p.data.documentId])).rows[0];
       if (!doc) return reply.code(404).send({ erro: 'documento fora do escopo' });
       const hashBefore: string = doc.sha256_hash;
+      const workerNome = decFieldSafe(doc.worker_enc);
 
       // Sela um novo PDF com a assinatura e evidências.
       const signedAt = new Date().toISOString();
       const sealedPdf = await renderContractPdf({
-        title: 'Contrato de Prestação de Serviços de Campanha', candidate: doc.cand, worker: doc.worker,
+        title: 'Contrato de Prestação de Serviços de Campanha', candidate: doc.cand, worker: workerNome,
         bodyText: stripHtml(doc.content_html),
-        signatures: [{ who: `Formiguinha (${doc.worker})`, at: signedAt, hash: hashBefore }],
+        signatures: [{ who: `Formiguinha (${workerNome})`, at: signedAt, hash: hashBefore }],
       });
       const key = `office/${doc.accounting_office_id}/cand/${doc.candidate_id}/doc/${doc.id}/contrato-assinado.pdf`;
       const sf = await putEncrypted(key, sealedPdf);
