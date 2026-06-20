@@ -131,6 +131,17 @@
 
     <div class="card">
       <h2>Documentos</h2>
+      <div id="linkpanel" class="hide" style="background:#eef5ff;border:1px solid #cfe0f5;border-radius:8px;padding:12px;margin-bottom:12px;">
+        <p style="font-size:13px;margin:0 0 6px;color:var(--azul);font-weight:600;">Link de assinatura da formiguinha <span id="linkexp" style="font-weight:400;color:#667;"></span></p>
+        <p style="font-size:12px;color:#667;margin:0 0 8px;">Copie e envie pelo seu canal de confiança (WhatsApp, etc.). A formiguinha abre o link e assina.</p>
+        <div class="row" style="align-items:center;">
+          <div style="flex:1;"><input id="linkurl" readonly onclick="this.select()" /></div>
+          <div style="flex:0;"><button onclick="copiarLink()">Copiar</button></div>
+          <div style="flex:0;"><a id="linkwa" target="_blank"><button type="button" class="sec">Abrir no WhatsApp</button></a></div>
+          <div style="flex:0;"><button class="sec" onclick="$('linkpanel').classList.add('hide')">Fechar</button></div>
+        </div>
+        <div id="linkmsg"></div>
+      </div>
       <div id="docs">carregando…</div>
     </div>
 
@@ -242,6 +253,8 @@ async function listarDocs() {
     let b = '';
     if (['COORDENADOR_LOCAL'].includes(ME.papel) && ['CONTRATO_GERADO','ENVIADO_PARA_ASSINATURA','EM_ASSINATURA_ASSISTIDA'].includes(d.status))
       b += `<button class="sec" onclick="abrirAssinatura('${d.id}','${d.status}')">Assinar</button> `;
+    if (['COORDENADOR_LOCAL','COORDENADOR_GERAL'].includes(ME.papel) && ['CONTRATO_GERADO','ENVIADO_PARA_ASSINATURA'].includes(d.status))
+      b += `<button class="sec" onclick="gerarLink('${d.id}','${d.formiguinha.replace(/'/g,"\\'")}')">Link p/ assinatura</button> `;
     if (d.status==='FINALIZADO' || ADMIN_PENDENTE.includes(d.status))
       b += `<button class="sec" onclick="verContrato('${d.id}')">Ver contrato</button> `;
     if (ME.papel==='ADMINISTRADOR_CAMPANHA' && ADMIN_PENDENTE.includes(d.status))
@@ -262,6 +275,25 @@ async function listarDocs() {
 async function verContrato(id) {
   try { const blob = await api('/documentos/'+id+'/arquivo'); window.open(URL.createObjectURL(blob), '_blank'); }
   catch(e){ alert('Não foi possível abrir o contrato: '+e.message); }
+}
+async function gerarLink(id, formiguinha) {
+  try {
+    const r = await api('/assinatura/remota/criar', { method:'POST', body: JSON.stringify({ documentId:id }) });
+    const url = location.origin + r.link;
+    $('linkurl').value = url;
+    const exp = new Date(r.expira_em); $('linkexp').textContent = '· válido até '+exp.toLocaleString('pt-BR');
+    const texto = `Olá${formiguinha?', '+formiguinha:''}! Segue o link para você conferir seus dados e assinar o contrato: ${url}`;
+    $('linkwa').href = 'https://wa.me/?text=' + encodeURIComponent(texto);
+    $('linkmsg').innerHTML = '';
+    $('linkpanel').classList.remove('hide');
+    $('linkpanel').scrollIntoView({ behavior:'smooth', block:'center' });
+    await listarDocs(); // status passa a ENVIADO_PARA_ASSINATURA
+  } catch(e) { alert('Não foi possível gerar o link: '+e.message); }
+}
+async function copiarLink() {
+  const url = $('linkurl').value;
+  try { await navigator.clipboard.writeText(url); msg('linkmsg','Link copiado. ✓', true); }
+  catch(e) { $('linkurl').select(); document.execCommand && document.execCommand('copy'); msg('linkmsg','Selecionado — use Ctrl/Cmd+C para copiar.', true); }
 }
 async function carregarUsuarios() {
   try {
