@@ -24,4 +24,11 @@ export const env = {
     bucket: process.env.S3_BUCKET ?? 'documentos',
   },
   publicBaseUrl: process.env.PUBLIC_BASE_URL ?? 'http://localhost:8080',
+  // Espelhamento do PDF finalizado no Google Drive (destino adicional).
+  // Padrão 'log' (mock, sem rede). 'google' exige a credencial abaixo.
+  drive: {
+    mode: ((process.env.DRIVE_MODE ?? 'log').toLowerCase() === 'google' ? 'google' : 'log') as 'log' | 'google',
+    saJsonB64: process.env.GOOGLE_SA_JSON_B64 ?? '',   // JSON da service account em base64
+    rootFolderId: process.env.GDRIVE_ROOT_FOLDER_ID ?? '', // pasta raiz compartilhada c/ a SA
+  },
 };

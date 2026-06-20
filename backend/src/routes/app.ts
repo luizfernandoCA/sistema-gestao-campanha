@@ -6,6 +6,7 @@ import { authenticate, requireRole, userToScope } from '../core/auth.js';
 import { appendLedger, verifyChain } from '../core/audit.js';
 import { transition, WorkflowConflict } from '../core/workflow.js';
 import { putEncrypted, getDecrypted } from '../core/storage.js';
+import { pushDocumentToDrive } from '../core/drive.js';
 import { renderContractPdf, stripHtml } from '../core/pdf.js';
 import { sha256, hmac, randomToken, encField } from '../core/crypto.js';
 
@@ -342,8 +343,11 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     const user = req.user;
     return withScope(userToScope(user), async (c) => {
       const doc = (await c.query(
-        `SELECT d.id, d.candidate_id, d.accounting_office_id, f.sha256_hash
-           FROM document_instance d JOIN document_file f ON f.id = d.current_file_id
+        `SELECT d.id, d.candidate_id, d.accounting_office_id, cand.name AS candidate_name,
+                f.sha256_hash, f.storage_key, f.encrypted_data_key
+           FROM document_instance d
+           JOIN document_file f ON f.id = d.current_file_id
+           JOIN candidate cand ON cand.id = d.candidate_id
           WHERE d.id = $1`, [id])).rows[0];
       if (!doc) return reply.code(404).send({ erro: 'documento fora do escopo' });
       const hashBefore = doc.sha256_hash;
@@ -362,7 +366,35 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
         if (e instanceof WorkflowConflict) return reply.code(409).send({ erro: e.message });
         throw e;
       }
-      return { status: 'FINALIZADO' };
+
+      // Espelha o PDF finalizado no Google Drive (destino ADICIONAL — o S3 cifrado
+      // segue sendo a fonte da verdade). Falha aqui NÃO desfaz a finalização;
+      // o resultado (sucesso ou falha) fica registrado no ledger.
+      let drive: { provider: string; status: string; fileRef?: string } = { provider: 'LOG', status: 'PULADO' };
+      try {
+        const pdf = await getDecrypted(doc.storage_key, doc.encrypted_data_key);
+        const r = await pushDocumentToDrive({
+          candidateId: doc.candidate_id, candidateName: doc.candidate_name,
+          documentId: doc.id, filename: `contrato-${doc.id}.pdf`, content: pdf,
+        }, req.log);
+        drive = { provider: r.provider, status: r.status, fileRef: r.fileRef };
+        await appendLedger(c, {
+          candidateId: doc.candidate_id, officeId: doc.accounting_office_id,
+          resourceType: 'document', resourceId: doc.id, eventType: 'DRIVE_EXPORTADO',
+          actorUserId: user.sub, actorRole: user.role, payload: r,
+        });
+      } catch (e) {
+        const erro = (e as Error).message;
+        req.log.error({ err: erro, documentId: doc.id }, 'drive: falha ao espelhar (finalização mantida)');
+        drive = { provider: 'LOG', status: 'FALHA' };
+        await appendLedger(c, {
+          candidateId: doc.candidate_id, officeId: doc.accounting_office_id,
+          resourceType: 'document', resourceId: doc.id, eventType: 'DRIVE_FALHA',
+          actorUserId: user.sub, actorRole: user.role, payload: { erro },
+        });
+      }
+
+      return { status: 'FINALIZADO', drive };
     });
   });
 
