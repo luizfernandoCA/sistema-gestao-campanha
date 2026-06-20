@@ -12,6 +12,7 @@ import { modules2 } from './routes/modules2.js';
 import { modules3 } from './routes/modules3.js';
 import { platformRoutes } from './routes/platform.js';
 import { publicRoutes } from './routes/public.js';
+import { cadastroRoutes } from './routes/cadastros.js';
 import { openapiDoc } from './core/openapi.js';
 
 const app = Fastify({
@@ -59,6 +60,7 @@ await app.register(modules1);
 await app.register(modules2);
 await app.register(modules3);
 await app.register(platformRoutes);
+await app.register(cadastroRoutes);
 
 try {
   await ensureBucket();

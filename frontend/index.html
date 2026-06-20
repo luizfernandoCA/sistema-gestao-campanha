@@ -53,6 +53,29 @@
       <div id="dashboard">carregando…</div>
     </div>
 
+    <div class="card hide" id="cadastrocard">
+      <h2>Cadastro de campanha e candidato (administrador)</h2>
+      <p style="font-size:13px;color:#667;margin-top:0;font-weight:600;">Nova campanha</p>
+      <div class="row">
+        <div><label>Ano</label><input id="cmpano" type="number" value="2026" /></div>
+        <div><label>Tipo</label><input id="cmptipo" value="MUNICIPAL" /></div>
+        <div style="min-width:80px;"><label>UF</label><input id="cmpuf" maxlength="2" value="SP" /></div>
+        <div><label>Prazo envio (dias)</label><input id="cmppe" type="number" value="3" /></div>
+        <div><label>Prazo assinatura (dias)</label><input id="cmppa" type="number" value="7" /></div>
+        <div style="flex:0;"><label>&nbsp;</label><button onclick="criarCampanha()">Criar campanha</button></div>
+      </div>
+      <div id="cmpmsg"></div>
+      <p style="font-size:13px;color:#667;margin:16px 0 0;font-weight:600;">Novo candidato</p>
+      <div class="row">
+        <div><label>Nome</label><input id="cndnome" /></div>
+        <div style="min-width:110px;"><label>Número</label><input id="cndnum" /></div>
+        <div><label>Partido</label><input id="cndpart" /></div>
+        <div><label>Campanha</label><select id="cndcamp"></select></div>
+        <div style="flex:0;"><label>&nbsp;</label><button onclick="criarCandidato()">Criar candidato</button></div>
+      </div>
+      <div id="cndmsg"></div>
+    </div>
+
     <div class="card hide" id="importcard">
       <h2>Cadastrar formiguinhas (importação)</h2>
       <p style="font-size:13px;color:#667;margin-top:0;">Uma por linha no formato <code>CPF; Nome; Telefone</code> (telefone opcional). Pré-visualize para ver novos × duplicados, depois confirme — cada formiguinha vira uma atribuição sua.</p>
@@ -156,6 +179,7 @@ async function login() {
 function ajustarPorPapel() {
   $('gerarcard').classList.toggle('hide', !['COORDENADOR_LOCAL','COORDENADOR_GERAL','ADMINISTRADOR_CAMPANHA'].includes(ME.papel));
   $('importcard').classList.toggle('hide', !['COORDENADOR_LOCAL','COORDENADOR_GERAL','ADMINISTRADOR_CAMPANHA'].includes(ME.papel));
+  $('cadastrocard').classList.toggle('hide', ME.papel!=='ADMINISTRADOR_CAMPANHA');
   $('exportcard').classList.toggle('hide', !['CONTADOR','JURIDICO','AUDITOR'].includes(ME.papel));
   $('adminfila').classList.toggle('hide', ME.papel!=='ADMINISTRADOR_CAMPANHA');
   $('coordgeralcard').classList.toggle('hide', !['COORDENADOR_GERAL','ADMINISTRADOR_CAMPANHA'].includes(ME.papel));
@@ -174,6 +198,7 @@ async function carregar() {
       $('tpl').innerHTML = tpls.map(t=>`<option value="${t.id}">${t.name} v${t.version_number}</option>`).join('');
     }
     await listarDocs();
+    if (!$('cadastrocard').classList.contains('hide')) await carregarCampanhas();
     if (!$('coordgeralcard').classList.contains('hide')) await carregarCoordGeral();
   } catch(e) { $('dashboard').innerHTML = `<div class="msg erro">${e.message}</div>`; }
 }
@@ -219,6 +244,34 @@ async function listarDocs() {
 async function verContrato(id) {
   try { const blob = await api('/documentos/'+id+'/arquivo'); window.open(URL.createObjectURL(blob), '_blank'); }
   catch(e){ alert('Não foi possível abrir o contrato: '+e.message); }
+}
+async function carregarCampanhas() {
+  try {
+    const cs = await api('/campanhas');
+    $('cndcamp').innerHTML = cs.map(c=>`<option value="${c.id}">${c.election_type} ${c.state} ${c.election_year}</option>`).join('');
+  } catch(e) { $('cndcamp').innerHTML=''; }
+}
+async function criarCampanha() {
+  try {
+    const body = { election_year:+$('cmpano').value, election_type:$('cmptipo').value.trim(), state:$('cmpuf').value.trim() };
+    if ($('cmppe').value) body.prazo_envio_dias=+$('cmppe').value;
+    if ($('cmppa').value) body.prazo_assinatura_dias=+$('cmppa').value;
+    await api('/campanhas', { method:'POST', body: JSON.stringify(body) });
+    msg('cmpmsg','Campanha criada. ✓', true); await carregarCampanhas();
+  } catch(e) { msg('cmpmsg', e.message, false); }
+}
+async function criarCandidato() {
+  try {
+    if (!$('cndnome').value.trim() || !$('cndnum').value.trim() || !$('cndpart').value.trim() || !$('cndcamp').value) {
+      msg('cndmsg','Preencha nome, número, partido e selecione a campanha.', false); return;
+    }
+    await api('/candidatos', { method:'POST', body: JSON.stringify({
+      name:$('cndnome').value.trim(), candidate_number:$('cndnum').value.trim(),
+      party:$('cndpart').value.trim(), campaign_id:$('cndcamp').value }) });
+    msg('cndmsg','Candidato criado. ✓', true);
+    $('cndnome').value=''; $('cndnum').value=''; $('cndpart').value='';
+    await carregar();
+  } catch(e) { msg('cndmsg', e.message, false); }
 }
 let IMPORT_BATCH = null;
 function impParseLinhas() {
